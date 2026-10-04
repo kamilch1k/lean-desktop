@@ -98,6 +98,7 @@ The original development installation successfully ran its sign-in command repea
 | Action | Control |
 |---|---|
 | Launcher | Win alone, Win+S, Ctrl+Esc, or QuickSearch button |
+| Clear the search input | Ctrl+Backspace |
 | Show desktop / return | Win+D; Ctrl+Alt+D is also available |
 | Switch windows | Alt+Tab; Shift+Alt+Tab reverses direction |
 | Grouped window overview | Win+Tab, or taskbar context menu: Window overview |

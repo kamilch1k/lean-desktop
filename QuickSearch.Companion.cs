@@ -493,7 +493,8 @@ class QuickSearch : Form
 
     void OnKey(object sender, KeyEventArgs e)
     {
-        if (e.KeyCode == Keys.Escape) Hide();
+        if (e.Control && !e.Alt && e.KeyCode == Keys.Back) box.Clear();
+        else if (e.KeyCode == Keys.Escape) Hide();
         else if (e.KeyCode == Keys.Enter) Launch();
         else if (e.KeyCode == Keys.Down || e.KeyCode == Keys.Up)
         {
