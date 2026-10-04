@@ -12,19 +12,26 @@ LeanBar is written in C++ using Win32 controls and GDI. QuickSearch is a C# WinF
 
 - Task buttons with switching, minimize, close, active-window indication, and overflow.
 - Desktop files, folders, application shortcuts, and URL/file-type icons.
-- Basic folder navigation without opening Explorer; F5 refreshes the listing.
+- Basic folder navigation without opening Explorer. Filesystem notifications refresh desktop and folder listings automatically; F5 remains available.
 - Win+D to show the desktop and return to the previous window.
 - QuickSearch app/command launcher, Windows-key access, and screenshots.
 - Large Alt+Tab switcher with 48px icons and contrast for white icons.
+- Win+Tab overview with 64px icons, large window titles, and separate application groups, including Roblox Studio and file explorers. No animations or live thumbnails.
 - Native on-demand sound mixer, Bluetooth device controls, and Wi-Fi connections.
 - A recovery process that restores Explorer if the main desktop process crashes.
 - Optional sign-in startup plus Start Lean Desktop and Restore Windows shortcuts.
 
 ![Large Alt+Tab contrast preview using sample icons](docs/assets/alt-tab.png)
 
+The Win+Tab overview is a fullscreen native canvas inside the taskbar process. Each application gets its own panel; overflowing panels scroll independently, while the overall board stays fixed. Exceptionally many app groups use additional board pages (PageUp/PageDown or the footer arrows). It creates its window and icon list only while open and displays document/project titles. It paints in response to input and window events, with no thumbnail connections, screenshot capture, or animation loop.
+
+![Grouped Win+Tab overview using test windows](docs/assets/overview.png)
+
 ## Sound, Bluetooth, and Wi-Fi
 
 Use the **Sound**, **Bluetooth**, and **Wi-Fi** buttons on the taskbar. These open `LeanControls.exe`, a separate C++ Win32 application. It uses Windows device APIs directly, without Explorer, Windows Settings, React, WebView, or Electron. Closing it ends the process; it has no background service.
+
+The mixer uses a document/project title when the audio session's process owns one distinct window title. Window events keep that title current. If the process owns multiple windows, or is a browser audio subprocess, it keeps the app/session name because Windows cannot reliably attribute the audio to one document or tab. The second line includes the app name and process ID.
 
 - **Sound:** fixed output/master controls above a scrolling list of audio sessions, with app icons, playing/idle status, volume sliders and mute. Core Audio events update new sessions and external volume changes without polling. Apps appear once they have created an audio session on the selected output. Multiple sessions from one app appear separately; browser tabs can only be separated when the browser exposes separate Windows audio sessions. Closing the panel ends its listener thread too.
 - **Bluetooth:** list paired classic/BLE devices, scan for eight seconds, pair with PIN/confirmation handling, forget a device, and turn the radio on/off. Windows may show its required pairing-consent dialog. Paired headphones with compatible drivers get Connect audio and Disconnect audio controls. Connection success is checked against the audio endpoint state.
@@ -93,6 +100,8 @@ The original development installation successfully ran its sign-in command repea
 | Launcher | Win alone, Win+S, Ctrl+Esc, or QuickSearch button |
 | Show desktop / return | Win+D; Ctrl+Alt+D is also available |
 | Switch windows | Alt+Tab; Shift+Alt+Tab reverses direction |
+| Grouped window overview | Win+Tab, or taskbar context menu: Window overview |
+| Within the overview | Click / Enter to activate; arrows / Tab to select; wheel over an app group to scroll it; Esc / Win+Tab to close |
 | Desktop folder navigation | Double-click / Enter, Up button / Backspace |
 | Refresh files and icons | F5 or Refresh |
 | Window actions | Right-click a task button |
@@ -114,7 +123,8 @@ Restoration preserves the prerequisite `AutoRestartShell=0` configuration. Retur
 - Primary monitor only; this is not a multi-monitor shell.
 - Existing desktop files stay in their original locations.
 - No notification-area icon hosting, notification center, Recycle Bin, drag/drop, rename/delete UI, jump lists, or Explorer shell extensions.
-- Folder lists are limited to 4,096 visible entries and refreshed on demand.
+- Folder lists are limited to 4,096 visible entries. Change notifications watch the current folder, or both user and public Desktop folders, without recursively watching their contents. Selection is preserved across automatic refreshes. F5 is available if a filesystem does not support notifications.
+- The overview groups ordinary application windows on the current desktop. It does not create virtual desktops. Protected/elevated windows can limit window metadata or keyboard-hook access.
 - URLs use configured/cached icons where available, otherwise their associated browser/file-type icon. There is no favicon downloader.
 - Some Store apps, Windows shortcuts, and shell integrations expect Explorer. Opening such a feature may restart it. LeanBar does not continuously kill Explorer or ongoing file operations.
 - The companion's global keyboard hook is inherited from QuickSearch; its behavior can be affected by elevated apps and security software. Do not disable antivirus protections to run the project.
@@ -132,14 +142,17 @@ These are observations from different moments, not a controlled benchmark. Worki
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run.ps1
 ```
 
-Tests cover task filtering, overflow bounds, native desktop controls, hidden-file filtering, folder navigation, asynchronous icon resolution, and crash recovery using a **test-owned fixture window**. They do not stop your Explorer shell or install startup settings. Test images use synthetic sample files and icons.
+Tests cover task filtering, overflow bounds, native desktop controls, automatic create/rename/hide/delete refreshes, selection preservation, folder navigation, asynchronous icon resolution, overview grouping/scrolling/cleanup, exact-process mixer naming, and crash recovery using **test-owned fixture windows**. They do not stop your Explorer shell or install startup settings. Test images use synthetic sample files and icons.
 
 The three native controls panels are also rendered with sample data and checked for blank images. The mixer render verifies that scrolling moves app rows while the master controls stay fixed. For a separate hardware check, run `LeanControls.exe --probe report.txt`. For live mixer event tests, use `LeanControls.exe --test-live-sound report.txt`: it verifies that a new isolated session appears automatically, external volume/mute events update its controls, and its slider writes back correctly. These tests only change a dedicated test session, never another app's volume, pairing, radios, network connections, or default output. Reports are local and should not be committed.
 
 ## Project layout
 
+Controls rendering tests also switch repeatedly between Sound, Bluetooth, and Network, checking that old controls are destroyed and the selected panel is repainted.
+
 - `LeanBar.cpp`: native taskbar, takeover lifecycle, recovery guard, launcher IPC.
 - `Desktop.h`: native desktop, navigation, asynchronous system icons.
+- `Overview.h`, `WindowNames.h`: grouped icon overview and process/window identity helpers.
 - `LeanControls.cpp`, `ControlsAudio.h`, `ControlsWireless.h`: native sound, Bluetooth and Wi-Fi UI and device access.
 - `QuickSearch.Companion.cs`: app launcher, larger switcher, screenshot handling, Win+D fallback.
 - `Install.ps1`, `StartSession.ps1`, `Restore.ps1`: installation, startup, rollback.

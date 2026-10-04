@@ -30,6 +30,7 @@ class QuickSearch : Form
     [DllImport("user32.dll")] static extern uint RegisterWindowMessage(string name);
     [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] static extern bool AllowSetForegroundWindow(uint processId);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     [DllImport("user32.dll")] static extern bool RegisterHotKey(IntPtr hWnd, int id, uint mods, uint vk);
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string className, string title);
@@ -73,7 +74,7 @@ class QuickSearch : Form
     IntPtr hook;
     Thread keyboardThread;
     bool winDown, winUsed, winSDone, switching;
-    bool desktopKeyDown;
+    bool desktopKeyDown, overviewKeyDown;
     Switcher switcher;
     TextBox box = new TextBox();
     ListBox list = new ListBox();
@@ -138,7 +139,7 @@ class QuickSearch : Form
         if (hook != IntPtr.Zero) UnhookWindowsHookEx(hook);
         winDown = Held(VK_LWIN) || Held(VK_RWIN);
         winUsed = winDown;
-        winSDone = desktopKeyDown = switching = false;
+        winSDone = desktopKeyDown = overviewKeyDown = switching = false;
         BeginInvoke(new Action(switcher.Cancel));
         hook = SetWindowsHookEx(WH_KEYBOARD_LL, hookProc, GetModuleHandle(null), 0);
         return hook != IntPtr.Zero;
@@ -192,7 +193,24 @@ class QuickSearch : Form
             // Lost key-up events (lock screen, UAC, hook reinstallation) must not
             // leave Win marked down forever and silently disable Alt+Tab.
             if (vk != VK_LWIN && vk != VK_RWIN && !Held(VK_LWIN) && !Held(VK_RWIN)) winDown = false;
+            if (vk != VK_TAB && !Held(VK_TAB)) overviewKeyDown = false;
             if (vk == 0x44 && !down && desktopKeyDown) { desktopKeyDown = false; return (IntPtr)1; }
+            if (vk == VK_TAB && !down && overviewKeyDown) { overviewKeyDown = false; return (IntPtr)1; }
+            if (vk == VK_TAB && down && winDown && !Held(VK_CONTROL) && !Held(VK_MENU))
+            {
+                IntPtr nativeBar = FindWindow("LeanBar.Window", null);
+                if (nativeBar != IntPtr.Zero)
+                {
+                    winUsed = true;
+                    if (!overviewKeyDown)
+                    {
+                        overviewKeyDown = true; Mask();
+                        uint pid; GetWindowThreadProcessId(nativeBar, out pid); AllowSetForegroundWindow(pid);
+                        PostMessage(nativeBar, RegisterWindowMessage("LeanBar.Overview"), IntPtr.Zero, IntPtr.Zero);
+                    }
+                    return (IntPtr)1;
+                }
+            }
             if ((vk == VK_LMENU || vk == VK_RMENU) && !down && switching)   // Alt released: go to the picked window
             {
                 switching = false;

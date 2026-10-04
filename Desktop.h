@@ -12,6 +12,39 @@ static bool desktopRaised;
 static unsigned iconGeneration;
 static unsigned desktopIconsResolved;
 static constexpr UINT DESK_ICONS = WM_APP + 50;
+static constexpr UINT DESK_CHANGED = WM_APP + 51, DESK_REFRESH_TIMER = 51;
+struct DesktopWatch {
+    HANDLE stop = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+    std::vector<HANDLE> changes;
+    std::vector<std::wstring> paths;
+    ~DesktopWatch() { for (HANDLE h : changes) FindCloseChangeNotification(h); if (stop) CloseHandle(stop); }
+};
+static std::shared_ptr<DesktopWatch> desktopWatch;
+static std::wstring desktopListedFolder;
+static void WatchDesktopFolders(const std::vector<std::wstring>& paths) {
+    if (desktopWatch && desktopWatch->paths == paths) return;
+    if (desktopWatch) SetEvent(desktopWatch->stop);
+    desktopWatch.reset();
+    auto watch = std::make_shared<DesktopWatch>(); watch->paths = paths;
+    if (!watch->stop) return;
+    for (const auto& path : paths) {
+        HANDLE change = FindFirstChangeNotification(path.c_str(), FALSE,
+            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_ATTRIBUTES | FILE_NOTIFY_CHANGE_LAST_WRITE);
+        if (change != INVALID_HANDLE_VALUE) watch->changes.push_back(change);
+    }
+    if (watch->changes.empty()) return;
+    desktopWatch = watch; HWND target = desktopWindow;
+    std::thread([watch, target] {
+        std::vector<HANDLE> handles{watch->stop}; handles.insert(handles.end(), watch->changes.begin(), watch->changes.end());
+        for (;;) {
+            DWORD signal = WaitForMultipleObjects(static_cast<DWORD>(handles.size()), handles.data(), FALSE, INFINITE);
+            if (signal == WAIT_OBJECT_0 || signal == WAIT_FAILED || signal >= WAIT_OBJECT_0 + handles.size()) break;
+            HANDLE changed = handles[signal-WAIT_OBJECT_0];
+            if (!FindNextChangeNotification(changed)) break;
+            PostMessage(target, DESK_CHANGED, 0, 0);
+        }
+    }).detach(); // Stop event wakes the worker; shared ownership protects its handles.
+}
 struct IconJob { std::wstring path; int index; unsigned generation; };
 struct IconResult { int index, image; unsigned generation; };
 struct IconLoader {
@@ -61,13 +94,21 @@ static void ReadDesktopFolder(const std::wstring& folder) {
     FindClose(h);
 }
 static void RefreshDesktop() {
-    desktopItems.clear(); desktopTruncated = false; desktopIconsResolved=0;
+    KillTimer(desktopWindow, DESK_REFRESH_TIMER);
+    std::vector<std::wstring> selected;
+    POINT origin{}; ListView_GetOrigin(desktopList, &origin);
+    if (desktopListedFolder == desktopFolder) for (int i=0;i<static_cast<int>(desktopItems.size());++i)
+        if (ListView_GetItemState(desktopList,i,LVIS_SELECTED)&LVIS_SELECTED) selected.push_back(desktopItems[i].path);
+    desktopListedFolder = desktopFolder;
+    std::vector<std::wstring> folders;
     if (desktopFolder.empty()) {
-        PWSTR path = nullptr;
-        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &path))) { ReadDesktopFolder(path); CoTaskMemFree(path); }
-        path = nullptr;
-        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_PublicDesktop, 0, nullptr, &path))) { ReadDesktopFolder(path); CoTaskMemFree(path); }
-    } else ReadDesktopFolder(desktopFolder);
+        for (const auto& id : {FOLDERID_Desktop,FOLDERID_PublicDesktop}) {
+            PWSTR path=nullptr; if (SUCCEEDED(SHGetKnownFolderPath(id,0,nullptr,&path))) { folders.emplace_back(path); CoTaskMemFree(path); }
+        }
+    } else folders.push_back(desktopFolder);
+    WatchDesktopFolders(folders); // Subscribe before enumerating so new changes are not missed.
+    desktopItems.clear(); desktopTruncated = false; desktopIconsResolved=0;
+    for (const auto& folder : folders) ReadDesktopFolder(folder);
     std::sort(desktopItems.begin(), desktopItems.end(), [](const DesktopItem& a, const DesktopItem& b) {
         return a.directory != b.directory ? a.directory > b.directory : _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
     });
@@ -76,7 +117,9 @@ static void RefreshDesktop() {
         auto& item = desktopItems[i]; LVITEM lv{}; lv.mask = LVIF_TEXT | LVIF_IMAGE; lv.iItem = i;
         lv.pszText = const_cast<wchar_t*>(item.name.c_str()); lv.iImage = item.directory ? folderIcon : (item.shortcut ? shortcutIcon : fileIcon);
         ListView_InsertItem(desktopList, &lv);
+        if (std::find(selected.begin(),selected.end(),item.path)!=selected.end()) ListView_SetItemState(desktopList,i,LVIS_SELECTED,LVIS_SELECTED);
     }
+    POINT now{}; ListView_GetOrigin(desktopList,&now); ListView_Scroll(desktopList,origin.x-now.x,origin.y-now.y);
     SendMessage(desktopList, WM_SETREDRAW, TRUE, 0); InvalidateRect(desktopList, nullptr, TRUE);
     std::wstring label = desktopFolder.empty() ? L"Desktop" : desktopFolder;
     label += L"  |  " + std::to_wstring(desktopItems.size()) + L" items";
@@ -136,6 +179,8 @@ static void ShowLeanDesktop() {
     SetForegroundWindow(desktopWindow); SetFocus(desktopList);
 }
 static void DestroyDesktop() {
+    if (desktopWatch) { SetEvent(desktopWatch->stop); desktopWatch.reset(); }
+    if (desktopWindow) KillTimer(desktopWindow,DESK_REFRESH_TIMER);
     if(iconLoader) { {std::lock_guard<std::mutex> lock(iconLoader->mutex);iconLoader->stop=true;iconLoader->jobs.clear();iconLoader->results.clear();} iconLoader->wake.notify_one();iconLoader.reset(); }
     if (desktopWindow) DestroyWindow(desktopWindow); desktopWindow = nullptr;
     // The system owns this shared image list; never destroy or add images to it.
@@ -153,6 +198,8 @@ static void LayoutDesktop() {
 static LRESULT CALLBACK DesktopProcedure(HWND w, UINT message, WPARAM wp, LPARAM lp) {
     switch (message) {
         case WM_CREATE: desktopWindow = w; return 0;
+        case DESK_CHANGED: SetTimer(w,DESK_REFRESH_TIMER,250,nullptr); return 0;
+        case WM_TIMER: if(wp==DESK_REFRESH_TIMER) RefreshDesktop(); return 0;
         case WM_SIZE: if (desktopList) LayoutDesktop(); return 0;
         case WM_DPICHANGED: {
             auto r = reinterpret_cast<RECT*>(lp); SetWindowPos(w,nullptr,r->left,r->top,r->right-r->left,r->bottom-r->top,SWP_NOZORDER | SWP_NOACTIVATE); return 0;

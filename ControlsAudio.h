@@ -10,10 +10,11 @@
 #include <condition_variable>
 #include <winver.h>
 #include <wrl/client.h>
+#include "WindowNames.h"
 using Microsoft::WRL::ComPtr;
 
 struct AudioOutput { std::wstring id, name; DWORD state = 0; bool bluetooth = false; };
-struct AudioRow { std::wstring name; ComPtr<ISimpleAudioVolume> volume; HWND slider{}, mute{}, value{}; HICON icon{}; DWORD pid=0; AudioSessionState state=AudioSessionStateInactive; };
+struct AudioRow { std::wstring name, appName; ComPtr<ISimpleAudioVolume> volume; HWND slider{}, mute{}, value{}, titleLabel{}; HICON icon{}; DWORD pid=0; AudioSessionState state=AudioSessionStateInactive; };
 static std::vector<AudioOutput> outputs;
 static std::vector<AudioRow> audioRows;
 static ComPtr<IAudioEndpointVolume> master;
@@ -22,6 +23,7 @@ static std::wstring selectedOutput;
 static HWND audioViewport{};
 static std::vector<Placed> audioPlacements;
 static int audioScroll=0,audioHeight=0;
+static std::vector<HWINEVENTHOOK> audioTitleHooks;
 static const GUID AudioContext={0x5788b309,0x68ac,0x4d0d,{0xb8,0x8a,0x99,0x2c,0x3b,0xb5,0x69,0x04}};
 static void ScrollAudio(){
     if(!audioViewport)return;RECT r{};GetClientRect(audioViewport,&r);audioScroll=std::clamp(audioScroll,0,std::max(0,S(audioHeight)-static_cast<int>(r.bottom)));
@@ -36,6 +38,8 @@ static HWND AudioAdd(const wchar_t* cls,const wchar_t* text,DWORD style,int x,in
     SendMessage(control,WM_SETFONT,reinterpret_cast<WPARAM>(uiFont),TRUE);audioPlacements.push_back({control,x,y,w,h});return control;
 }
 static void ClearAudio(){
+    for(auto hook:audioTitleHooks)UnhookWinEvent(hook);audioTitleHooks.clear();
+    KillTimer(mainWindow,9);
     audioPlacements.clear();if(audioViewport)DestroyWindow(audioViewport);audioViewport=nullptr;
     for(auto& row:audioRows)if(row.icon)DestroyIcon(row.icon);audioRows.clear();master.Reset();
 }
@@ -214,6 +218,19 @@ static std::wstring SessionName(IAudioSessionControl* control,IAudioSessionContr
     if(name.empty() && !path.empty()){name=path;name=name.substr(name.find_last_of(L"\\/")+1);}
     return name.empty()?L"Audio application ("+std::to_wstring(pid)+L")":name;
 }
+static void SyncAudioTitles(){
+    std::vector<ProcessWindowTitle> titles;EnumWindows(ReadProcessWindowTitle,reinterpret_cast<LPARAM>(&titles));
+    for(auto& row:audioRows){
+        auto title=ExactProcessTitle(row.pid,titles);
+        if(title.empty())title=row.appName;
+        if(title!=row.name){row.name=title;if(row.titleLabel)SetWindowText(row.titleLabel,title.c_str());}
+    }
+}
+static void CALLBACK AudioWindowEvent(HWINEVENTHOOK,DWORD,HWND window,LONG object,LONG child,DWORD,DWORD){
+    if(!window || object!=OBJID_WINDOW || child!=CHILDID_SELF || (GetWindowLongPtr(window,GWL_STYLE)&WS_CHILD))return;
+    DWORD pid=0;GetWindowThreadProcessId(window,&pid);
+    if(std::any_of(audioRows.begin(),audioRows.end(),[pid](const auto& row){return row.pid && row.pid==pid;}))SetTimer(mainWindow,9,200,nullptr);
+}
 static void VolumeControls(int id,int y,const std::wstring& label,float level,BOOL muted,HWND& slider,HWND& mute,HWND& value) {
     Add(L"STATIC",label.c_str(),SS_ENDELLIPSIS,16,y,345,24);
     value=Add(L"STATIC",(std::to_wstring(static_cast<int>(level*100+.5f))+L"%").c_str(),SS_RIGHT,374,y,55,24);
@@ -254,9 +271,10 @@ static void BuildSound() {
             if(FAILED(sessions->GetSession(i,&control)) || FAILED(control.As(&info)) || FAILED(control.As(&volume))) continue;
             if(FAILED(control->GetState(&state)) || state==AudioSessionStateExpired) continue;
             DWORD pid=0;info->GetProcessId(&pid);
-            AudioRow row;row.name=SessionName(control.Get(),info.Get());row.volume=volume;row.pid=pid;row.state=state;row.icon=SessionIcon(pid);audioRows.push_back(std::move(row));
+            AudioRow row;row.name=SessionName(control.Get(),info.Get());row.appName=row.name;row.volume=volume;row.pid=pid;row.state=state;row.icon=SessionIcon(pid);audioRows.push_back(std::move(row));
         }
     } else for(const wchar_t* name:{L"Google Chrome",L"Discord",L"Music",L"Game",L"Google Chrome",L"System sounds",L"Video player",L"Voice chat",L"Browser - separate session",L"Other audio"}){AudioRow row;row.name=name;row.pid=4242;row.state=AudioSessionStateActive;row.icon=CopyIcon(LoadIcon(nullptr,IDI_APPLICATION));audioRows.push_back(std::move(row));}
+    if(!demo)SyncAudioTitles();
     VolumeControls(120,85,L"Master volume",level,muted,masterSlider,masterMute,masterValue);
     Add(L"STATIC",L"Audio sessions on this output",0,16,164,460,24);
     int y=8;
@@ -264,17 +282,23 @@ static void BuildSound() {
         auto& row=audioRows[i];level=.5f;muted=FALSE;
         if(row.volume){row.volume->GetMasterVolume(&level);row.volume->GetMute(&muted);}
         AudioAdd(L"STATIC",L"",SS_OWNERDRAW,16,y+4,40,40,3000+i);
-        AudioAdd(L"STATIC",row.name.c_str(),SS_ENDELLIPSIS,68,y,290,23);
-        std::wstring detail=(row.state==AudioSessionStateActive?L"Playing":L"Idle")+std::wstring(L"  |  Audio session ")+std::to_wstring(i+1);
-        AudioAdd(L"STATIC",detail.c_str(),SS_ENDELLIPSIS,68,y+25,340,21);
+        row.titleLabel=AudioAdd(L"STATIC",row.name.c_str(),SS_ENDELLIPSIS|SS_NOPREFIX,68,y,290,42);
+        std::wstring detail=(row.state==AudioSessionStateActive?L"Playing":L"Idle")+std::wstring(L"  |  ")+(row.appName.empty()?row.name:row.appName);
+        if(row.pid)detail+=L"  |  PID "+std::to_wstring(row.pid);
+        AudioAdd(L"STATIC",detail.c_str(),SS_ENDELLIPSIS|SS_NOPREFIX,68,y+43,478,23);
         row.value=AudioAdd(L"STATIC",(std::to_wstring(static_cast<int>(level*100+.5f))+L"%").c_str(),SS_RIGHT,374,y,55,24);
         row.mute=AudioAdd(L"BUTTON",L"Mute",BS_AUTOCHECKBOX,448,y,90,24,1001+2*i);SendMessage(row.mute,BM_SETCHECK,muted?BST_CHECKED:BST_UNCHECKED,0);
-        row.slider=AudioAdd(TRACKBAR_CLASS,L"",TBS_HORZ|TBS_NOTICKS,68,y+49,478,30,1000+2*i);SendMessage(row.slider,TBM_SETRANGE,TRUE,MAKELPARAM(0,100));SendMessage(row.slider,TBM_SETPOS,TRUE,static_cast<int>(level*100+.5f));SendMessage(row.slider,TBM_SETPAGESIZE,0,5);
-        y+=99;
+        row.slider=AudioAdd(TRACKBAR_CLASS,L"",TBS_HORZ|TBS_NOTICKS,68,y+69,478,30,1000+2*i);SendMessage(row.slider,TBM_SETRANGE,TRUE,MAKELPARAM(0,100));SendMessage(row.slider,TBM_SETPOS,TRUE,static_cast<int>(level*100+.5f));SendMessage(row.slider,TBM_SETPAGESIZE,0,5);
+        y+=119;
     }
     if(audioRows.empty()) AudioAdd(L"STATIC",L"Play audio in an app to show it here.",0,16,y,530,44);
     audioHeight=y+50;ContentHeight(0);LayoutAudio();
-    if(!demo)SetAudioWatch(selectedOutput);
+    if(!demo){
+        SetAudioWatch(selectedOutput);
+        for(auto range:std::vector<std::pair<DWORD,DWORD>>{{EVENT_OBJECT_NAMECHANGE,EVENT_OBJECT_NAMECHANGE},{EVENT_OBJECT_DESTROY,EVENT_OBJECT_HIDE}}){
+            auto hook=SetWinEventHook(range.first,range.second,nullptr,AudioWindowEvent,0,0,WINEVENT_OUTOFCONTEXT|WINEVENT_SKIPOWNPROCESS);if(hook)audioTitleHooks.push_back(hook);
+        }
+    }
     Status(L"Live audio sessions. Scroll for more apps. Browsers may combine tabs into one session.");
 }
 static void AudioSlider(HWND slider) {

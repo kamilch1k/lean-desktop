@@ -97,6 +97,7 @@ static bool AskText(const std::wstring& title,const std::wstring& label,std::wst
 #include "ControlsWireless.h"
 
 static void BuildPage(){
+    KillTimer(mainWindow,7); // A queued Sound rebuild must not outlive the selected page.
     SetWindowRedraw(content,FALSE);
     ClearAudio();if(page!=0){audioScroll=0;SetAudioWatch(L"");}
     for(auto& c:controls)DestroyWindow(c.hwnd);controls.clear();
@@ -107,7 +108,10 @@ static void BuildPage(){
     catch(const winrt::hresult_error& e){Status(ErrorText(e.code()));}
     catch(HRESULT hr){Status(ErrorText(hr));}
     catch(...){Status(L"This panel could not load. Refresh to retry.");}
-    ScrollLayout();SetWindowRedraw(content,TRUE);RedrawWindow(content,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);
+    ScrollLayout();SetWindowRedraw(content,TRUE);
+    // Destroyed child controls leave pixels behind unless the parent's background
+    // is erased too. Invalidation alone produces overlapping panels after a tab switch.
+    RedrawWindow(content,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_FRAME|RDW_ALLCHILDREN|RDW_UPDATENOW);
 }
 static void HandleCommand(int id,int notification){
     if(demo)return;
@@ -151,7 +155,7 @@ static LRESULT CALLBACK MainProcedure(HWND w,UINT msg,WPARAM wp,LPARAM lp){
     case WM_APP+5:{wchar_t reason[1024]{};WlanReasonCodeToString(static_cast<DWORD>(wp),1024,reason,nullptr);Status(L"Connection failed: "+std::wstring(reason));return 0;}
     case WM_APP+7:if(page==0)SetTimer(w,7,200,nullptr);return 0;
     case WM_APP+8:if(page==0 && !GetCapture())SyncAudioLevels();return 0;
-    case WM_TIMER:if(wp==7){if(GetCapture())return 0;KillTimer(w,7);if(page==0)BuildPage();}return 0;
+    case WM_TIMER:if(wp==7){if(GetCapture())return 0;KillTimer(w,7);if(page==0)BuildPage();}if(wp==9){KillTimer(w,9);if(page==0)SyncAudioTitles();}return 0;
     case WM_CLOSE:DestroyWindow(w);return 0;
     case WM_DESTROY:PostQuitMessage(0);return 0;
     }return DefWindowProc(w,msg,wp,lp);
@@ -236,10 +240,21 @@ int WINAPI wWinMain(HINSTANCE h,HINSTANCE,PWSTR,int){
         DWORD until=GetTickCount()+150;MSG pending{};
         while(GetTickCount()<until){while(PeekMessage(&pending,nullptr,0,0,PM_REMOVE)){TranslateMessage(&pending);DispatchMessage(&pending);}MsgWaitForMultipleObjects(0,nullptr,FALSE,20,QS_ALLINPUT);}
         bool layoutOk=true;
+        if(demo){
+            int requested=page;
+            // Exercise actual tab notifications, including pending Sound timers.
+            for(int next:{1,0,2,1,2,0,requested}){
+                SetTimer(mainWindow,7,200,nullptr);TabCtrl_SetCurSel(tabs,next);
+                NMHDR change{tabs,0,TCN_SELCHANGE};SendMessage(mainWindow,WM_NOTIFY,0,reinterpret_cast<LPARAM>(&change));
+                PumpControls(30);
+                int children=0;for(HWND child=GetWindow(content,GW_CHILD);child;child=GetWindow(child,GW_HWNDNEXT))++children;
+                layoutOk=layoutOk && children==static_cast<int>(controls.size())+(audioViewport?1:0) && page==next;
+            }
+        }
         if(demo && page==0 && !audioRows.empty()){
             RECT masterBefore{},masterAfter{},rowBefore{},rowAfter{};GetWindowRect(masterSlider,&masterBefore);GetWindowRect(audioRows[0].slider,&rowBefore);
             audioScroll=S(100);ScrollAudio();GetWindowRect(masterSlider,&masterAfter);GetWindowRect(audioRows[0].slider,&rowAfter);
-            layoutOk=EqualRect(&masterBefore,&masterAfter) && rowAfter.top<rowBefore.top && audioScroll>0;
+            layoutOk=layoutOk && EqualRect(&masterBefore,&masterAfter) && rowAfter.top<rowBefore.top && audioScroll>0;
             audioScroll=0;ScrollAudio();
         }
         bool ok=RenderOwnWindow(render);DestroyWindow(mainWindow);return ok && layoutOk?0:1;

@@ -35,7 +35,7 @@ static std::vector<Task> tasks;
 static std::vector<HWINEVENTHOOK> hooks;
 static HWND active;
 static bool replaceMode, demoMode, desktopMode, desktopPreview, companionMode, takeoverMode, queued, closing, fullscreen, positioning;
-static UINT dpi = 96, taskbarCreated, showDesktopMessage;
+static UINT dpi = 96, taskbarCreated, showDesktopMessage, overviewMessage;
 static int barHeight = 36;
 static HANDLE mapping, guardProcess;
 static Recovery* recovery;
@@ -70,14 +70,15 @@ static BOOL CALLBACK Collect(HWND w, LPARAM data) {
     if (TaskWindow(w)) reinterpret_cast<std::vector<HWND>*>(data)->push_back(w);
     return TRUE;
 }
-static HICON CopyWindowIcon(HWND w) {
+static HICON CopyWindowIcon(HWND w, bool large = false) {
     DWORD_PTR result = 0;
-    SendMessageTimeout(w, WM_GETICON, ICON_SMALL2, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 20, &result);
+    SendMessageTimeout(w, WM_GETICON, large ? ICON_BIG : ICON_SMALL2, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 20, &result);
     HICON icon = reinterpret_cast<HICON>(result);
-    if (!icon) icon = reinterpret_cast<HICON>(GetClassLongPtr(w, GCLP_HICONSM));
+    if (!icon) icon = reinterpret_cast<HICON>(GetClassLongPtr(w, large ? GCLP_HICON : GCLP_HICONSM));
     if (!icon) icon = LoadIcon(nullptr, IDI_APPLICATION);
     return CopyIcon(icon);
 }
+#include "Overview.h"
 static HWND Button(int id, const wchar_t* title) {
     HWND w = CreateWindowEx(0, L"BUTTON", title, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
         0, 0, 0, 0, bar, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
@@ -226,6 +227,7 @@ static void Refresh() {
     if (changed) LayoutButtons();
     bool full = !demoMode && IsFullscreen(foreground);
     if (full != fullscreen) { fullscreen = full; ShowWindow(bar, full ? SW_HIDE : SW_SHOWNA); }
+    if (overviewWindow) RefreshOverview(live);
 }
 static void CALLBACK WindowEvent(HWINEVENTHOOK, DWORD event, HWND w, LONG object, LONG child, DWORD, DWORD) {
     if (!bar || closing || !w || object != OBJID_WINDOW || child != CHILDID_SELF || w == bar) return;
@@ -288,6 +290,7 @@ static void Menu(POINT at, HWND target = nullptr, bool all = false) {
         AppendMenu(menu, MF_STRING, 18, L"Bluetooth devices");
         AppendMenu(menu, MF_STRING, 14, L"Date and time settings");
         if (desktopWindow) AppendMenu(menu, MF_STRING, 17, L"Show desktop\tWin+D");
+        AppendMenu(menu, MF_STRING, 19, L"Window overview\tWin+Tab");
         AppendMenu(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenu(menu, MF_STRING, 15, L"About LeanBar");
         AppendMenu(menu, MF_STRING, 16, L"Exit and restore taskbar\tCtrl+Alt+F12");
@@ -310,6 +313,7 @@ static void Menu(POINT at, HWND target = nullptr, bool all = false) {
         case 16: PostMessage(bar, WM_CLOSE, 0, 0); break;
         case 17: ShowLeanDesktop(); break;
         case 18: Controls(L"--bluetooth"); break;
+        case 19: ToggleOverview(); break;
     }
 }
 static void PaintButton(const DRAWITEMSTRUCT* d) {
@@ -342,6 +346,7 @@ static void WriteStatus() {
         << ",\n  \"explorerTaskbarPresent\": " << (FindWindow(L"Shell_TrayWnd",nullptr)?"true":"false")
         << ",\n  \"taskCount\": " << tasks.size() << ",\n  \"desktopItems\": " << desktopItems.size()
         << ",\n  \"iconsResolved\": " << desktopIconsResolved << ",\n  \"winDRegistered\": " << (winDNative?"true":"false")
+        << ",\n  \"overviewOpen\": " << (overviewWindow?"true":"false") << ",\n  \"overviewWindows\": " << overviewItems.size()
         << ",\n  \"eventHooks\": " << hooks.size() << ",\n  \"refreshCount\": " << refreshCount
         << ",\n  \"workingSetBytes\": " << memory.WorkingSetSize << ",\n  \"privateBytes\": " << memory.PrivateUsage
         << ",\n  \"workAreaBottom\": " << area.bottom << ",\n  \"barTop\": " << bounds.top << "\n}\n";
@@ -381,6 +386,7 @@ static bool BeginTakeover() {
 }
 static LRESULT CALLBACK Procedure(HWND w, UINT message, WPARAM wp, LPARAM lp) {
     if (message == showDesktopMessage) { ShowLeanDesktop(); return 0; }
+    if (message == overviewMessage) { ToggleOverview(); return 0; }
     if (message == taskbarCreated) { PostMessage(w, REFRESH, 1, 0); return 0; }
     switch (message) {
         case WM_CREATE: bar = w; return 0;
@@ -420,6 +426,7 @@ static LRESULT CALLBACK Procedure(HWND w, UINT message, WPARAM wp, LPARAM lp) {
         case WM_CLOSE: DestroyWindow(w); return 0;
         case WM_DESTROY:
             closing = true;
+            CloseOverview(false);
             for (auto h : hooks) UnhookWinEvent(h); hooks.clear();
             UnregisterHotKey(w, 1); UnregisterHotKey(w, 2); UnregisterHotKey(w,3); DestroyDesktop(); Restore(recovery); PostQuitMessage(0); return 0;
     }
@@ -456,7 +463,7 @@ int WINAPI wWinMain(HINSTANCE h, HINSTANCE, PWSTR, int) {
         recovery->taskbar = fixture; recovery->showTaskbar = TRUE;
         ShowWindow(fixture, SW_HIDE); ExitProcess(99);
     }
-    bool selftest = false, restore = false, status = false;
+    bool selftest = false, restore = false, status = false, overview = false;
     for (int i = 1; i < argc; ++i) {
         if (!wcscmp(argv[i], L"--replace")) replaceMode = true;
         if (!wcscmp(argv[i], L"--demo")) demoMode = true;
@@ -465,6 +472,7 @@ int WINAPI wWinMain(HINSTANCE h, HINSTANCE, PWSTR, int) {
         if (!wcscmp(argv[i], L"--companion")) companionMode = true;
         if (!wcscmp(argv[i], L"--takeover")) takeoverMode = desktopMode = companionMode = true;
         if (!wcscmp(argv[i], L"--status")) status = true;
+        if (!wcscmp(argv[i], L"--overview")) overview = true;
         if (!wcscmp(argv[i], L"--selftest")) selftest = true;
         if (!wcscmp(argv[i], L"--restore")) restore = true;
     }
@@ -473,6 +481,7 @@ int WINAPI wWinMain(HINSTANCE h, HINSTANCE, PWSTR, int) {
     LocalFree(argv);
     if (selftest) return SelfTest();
     HWND existing = FindWindow(CLASS_NAME, nullptr);
+    if (overview) { if(existing) { DWORD pid=0; GetWindowThreadProcessId(existing,&pid); AllowSetForegroundWindow(pid); PostMessage(existing,RegisterWindowMessage(L"LeanBar.Overview"),0,0); } return existing?0:1; }
     if (status) { if(existing) PostMessage(existing,WRITE_STATUS,0,0); return existing?0:1; }
     if (restore) {
         if (existing) PostMessage(existing, WM_CLOSE, 0, 0);
@@ -497,6 +506,7 @@ int WINAPI wWinMain(HINSTANCE h, HINSTANCE, PWSTR, int) {
     if (desktopMode && recovery) recovery->restartExplorer = TRUE;
     taskbarCreated = RegisterWindowMessage(L"TaskbarCreated");
     showDesktopMessage = RegisterWindowMessage(L"LeanBar.ShowDesktop");
+    overviewMessage = RegisterWindowMessage(L"LeanBar.Overview");
     WNDCLASS cls{}; cls.hInstance = h; cls.lpfnWndProc = Procedure; cls.lpszClassName = CLASS_NAME; cls.hCursor = LoadCursor(nullptr, IDC_ARROW);
     RegisterClass(&cls);
     bar = CreateWindowEx(demoMode ? WS_EX_APPWINDOW : WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, CLASS_NAME, L"LeanBar", (demoMode ? WS_OVERLAPPEDWINDOW : WS_POPUP) | WS_CLIPCHILDREN, 0,0,800,36,nullptr,nullptr,h,nullptr);
