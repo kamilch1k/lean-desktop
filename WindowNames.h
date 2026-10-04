@@ -7,7 +7,7 @@ static std::wstring LowerName(std::wstring value) {
     std::transform(value.begin(), value.end(), value.begin(), [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
     return value;
 }
-static std::wstring WindowProcessPath(DWORD pid) {
+static inline std::wstring WindowProcessPath(DWORD pid) {
     HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     wchar_t path[32768]{}; DWORD size = 32768;
     if (p) { QueryFullProcessImageName(p, 0, path, &size); CloseHandle(p); }

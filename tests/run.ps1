@@ -24,6 +24,10 @@ try {
     if ($self.ExitCode -ne 0) { throw 'Taskbar self-test failed.' }
     & .\build\tests\NativeTests.exe $bin $fixtures
     if ($LASTEXITCODE -ne 0) { throw 'Native integration tests failed.' }
+    & .\build\tests\AppTests.exe
+    if ($LASTEXITCODE -ne 0) { throw 'App manager integration tests failed.' }
+    $apps = Start-Process -FilePath (Join-Path $bin 'LeanApps.exe') -ArgumentList ('--demo --render "' + (Join-Path $bin 'apps-preview.png') + '"') -WindowStyle Hidden -Wait -PassThru
+    if ($apps.ExitCode -ne 0) { throw 'App manager rendering failed.' }
     & .\build\tests\RenderSwitcher.exe (Join-Path $bin 'QuickSearch.Companion.exe') (Join-Path $bin 'alt-tab-preview.png')
     if ($LASTEXITCODE -ne 0) { throw 'Switcher rendering failed.' }
     & .\build\tests\InputLanguage.exe (Join-Path $bin 'QuickSearch.Companion.exe')

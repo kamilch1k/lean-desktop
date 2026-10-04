@@ -8,7 +8,7 @@ $startupLink = Join-Path ([Environment]::GetFolderPath('Startup')) 'QuickSearch.
 $restoreLink = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Restore Windows.lnk'
 $shellSetting = Get-ItemPropertyValue 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' 'AutoRestartShell'
 if ($shellSetting -ne 0) { throw 'Explorer restart is enabled. No changes made. This installer is tailored to the existing shell-test configuration (AutoRestartShell=0).' }
-foreach ($name in 'LeanBar.exe','LeanControls.exe','QuickSearch.Companion.exe','LeanBar.ini','Restore.ps1','StartSession.ps1','README.md') {
+foreach ($name in 'LeanBar.exe','LeanControls.exe','LeanApps.exe','QuickSearch.Companion.exe','LeanBar.ini','Restore.ps1','StartSession.ps1','README.md') {
     if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $name))) { throw "Missing package file: $name" }
 }
 $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
@@ -19,7 +19,7 @@ if (-not (Test-Path -LiteralPath $statePath)) {
     $state = [ordered]@{ OriginalSearch=$originalSearch; StartupLink=$startupLink; HadStartupLink=(Test-Path -LiteralPath $startupLink); RestoreLink=$restoreLink; AutoRestartShellBefore=$shellSetting; TaskName=$taskName; InstalledAt=(Get-Date).ToString('o') }
     $state | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding UTF8
 }
-foreach ($name in 'LeanBar.exe','LeanControls.exe','QuickSearch.Companion.exe','LeanBar.ini','Restore.ps1','StartSession.ps1','README.md') {
+foreach ($name in 'LeanBar.exe','LeanControls.exe','LeanApps.exe','QuickSearch.Companion.exe','LeanBar.ini','Restore.ps1','StartSession.ps1','README.md') {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $installDir $name) -Force
 }
 $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json

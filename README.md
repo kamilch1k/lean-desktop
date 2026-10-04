@@ -18,6 +18,7 @@ LeanBar is written in C++ using Win32 controls and GDI. QuickSearch is a C# WinF
 - Large Alt+Tab switcher with 48px icons and contrast for white icons.
 - Win+Tab overview with large window titles and separate application groups, including Roblox Studio and file explorers. Icons adapt from 64px to 48px or 32px as a group fills up; titles stay the same readable size. No animations or live thumbnails.
 - Native on-demand sound mixer, Bluetooth device controls, and Wi-Fi connections.
+- Lean Apps: app groups with combined CPU/RAM, document windows, search, and close/force-end controls.
 - A recovery process that restores Explorer if the main desktop process crashes.
 - Optional sign-in startup plus Start Lean Desktop and Restore Windows shortcuts.
 
@@ -26,6 +27,23 @@ LeanBar is written in C++ using Win32 controls and GDI. QuickSearch is a C# WinF
 The Win+Tab overview is a fullscreen native canvas inside the taskbar process. Each application gets its own panel; overflowing panels scroll independently, while the overall board stays fixed. Exceptionally many app groups use additional board pages (PageUp/PageDown or the footer arrows). It creates its window and icon list only while open and displays document/project titles. It paints in response to input and window events, with no thumbnail connections, screenshot capture, or animation loop.
 
 ![Grouped Win+Tab overview using test windows](docs/assets/overview.png)
+
+## App manager
+
+Open **App manager** from the taskbar context menu, press **Ctrl+Alt+Esc**, or search for **Lean Apps** in QuickSearch. **Ctrl+Shift+Esc** continues to open Windows Task Manager.
+
+Lean Apps shows one row per executable installation, combining its processes and related windowless helpers from the same installation directory. Choose an app to see its individual window/document titles, such as each Roblox Studio project. The **Processes** tab exposes the exact processes included in that app's totals. Separately opened applications and child programs in unrelated directories retain their own groups; identical filenames in different installations are not merged.
+
+- Search by app, document/window title, process path, or PID. Click a column heading to sort by RAM, CPU, window count, or process count.
+- **Switch to** activates the selected window. **Close window** closes only that window; **Close app** asks all windows in the selected app group to close normally, allowing save prompts. Some apps continue running in the background after their windows close.
+- **Force end app** confirms before terminating the currently listed eligible processes in that group. It can lose unsaved work across all that app's windows. Each process is checked again by PID, creation time, executable path, owner, and critical status. Exited processes are skipped; newly spawned processes are not silently added to a confirmed operation.
+- **Include background apps** reveals user apps without visible windows. Windows background infrastructure and other users' processes remain in Windows Task Manager. Lean Desktop's shell processes and critical/Windows processes cannot be force-ended here.
+
+The panel is a separate native C++ Win32 executable, with no web renderer, kernel driver, service, or administrator requirement. A background worker samples every two seconds while the window is open and not minimized. **Pause** stops sampling; closing the window ends the process. App icons are cached while open, and refresh preserves the selected app/window and scroll position. No automatic process termination or priority changes occur.
+
+RAM is summed working-set memory in MiB, so shared pages can be counted more than once. CPU is normalized to the whole PC and needs two samples; it is not a per-window or per-browser-tab estimate. Incomplete memory data uses `~`, and unavailable/not-yet-sampled CPU uses `...`. Application groups are a convenience view, not a replacement for detailed system diagnostics or exact ownership of every brokered/helper process.
+
+![Lean Apps using synthetic app and project data](docs/assets/apps.png)
 
 ## Sound, Bluetooth, and Wi-Fi
 
@@ -53,7 +71,7 @@ Use Windows x64 with Visual Studio 2022 or compatible Build Tools, the **Desktop
 build.cmd
 ```
 
-The runnable package is written to `build\bin`. `build.cmd` finds the installed C++ tools through `vswhere`, or uses an existing developer command prompt. All three executables are built locally; no software is downloaded by the build. LeanControls uses the C++/WinRT headers supplied with a current Windows SDK.
+The runnable package is written to `build\bin`. `build.cmd` finds the installed C++ tools through `vswhere`, or uses an existing developer command prompt. All four executables are built locally; no software is downloaded by the build. LeanControls uses the C++/WinRT headers supplied with a current Windows SDK.
 
 ## Try without stopping Explorer
 
@@ -107,6 +125,8 @@ The original development installation successfully ran its sign-in command repea
 | Show desktop / return | Win+D; Ctrl+Alt+D is also available |
 | Switch windows | Alt+Tab; Shift+Alt+Tab reverses direction |
 | Grouped window overview | Win+Tab, or taskbar context menu: Window overview |
+| App manager | Ctrl+Alt+Esc, QuickSearch: Lean Apps, or taskbar context menu: App manager |
+| Full Windows Task Manager | Ctrl+Shift+Esc |
 | Within the overview | Click / Enter to activate; arrows / Tab to select; wheel over an app group to scroll it; Esc / Win+Tab to close |
 | Desktop folder navigation | Double-click / Enter, Up button / Backspace |
 | Refresh files and icons | F5 or Refresh |
@@ -153,6 +173,8 @@ Tests cover task filtering, overflow bounds, native desktop controls, automatic 
 
 The three native controls panels are also rendered with sample data and checked for blank images. The mixer render verifies that scrolling moves app rows while the master controls stay fixed, viewing another mixer does not switch playback, the explicit output button switches the simulated default, and disconnected outputs cannot be selected for playback. Bluetooth checks cover connected/disconnected action states. For a separate hardware check, run `LeanControls.exe --probe report.txt`. For live mixer event tests, use `LeanControls.exe --test-live-sound report.txt`: it verifies that a new isolated session appears automatically, external volume/mute events update its controls, and its slider writes back correctly. These tests only change a dedicated test session, never another app's volume, pairing, radios, network connections, or default output. Reports are local and should not be committed.
 
+App-manager tests cover aggregation, separate installations, parent PID reuse, resource sampling, and normal/forced closure of disposable test-owned processes. They never close the user's applications. The synthetic UI render also checks sorting, project-title filtering, selection preservation, detail tabs, and disabling actions when the selected app exits. Keyboard-layout tests cycle only a test-owned window through the installed layouts and restore its initial layout.
+
 ## Project layout
 
 Controls rendering tests also switch repeatedly between Sound, Bluetooth, and Network, checking that old controls are destroyed and the selected panel is repainted.
@@ -161,6 +183,7 @@ Controls rendering tests also switch repeatedly between Sound, Bluetooth, and Ne
 - `Desktop.h`: native desktop, navigation, asynchronous system icons.
 - `Overview.h`, `WindowNames.h`: grouped icon overview and process/window identity helpers.
 - `LeanControls.cpp`, `ControlsAudio.h`, `ControlsWireless.h`: native sound, Bluetooth and Wi-Fi UI and device access.
+- `LeanApps.cpp`, `AppModel.h`: on-demand app manager, resource sampling, grouping, and verified process actions.
 - `QuickSearch.Companion.cs`: app launcher, larger switcher, screenshot handling, Win+D fallback.
 - `Install.ps1`, `StartSession.ps1`, `Restore.ps1`: installation, startup, rollback.
 - `tests/`: native integration tests and switcher rendering fixture.

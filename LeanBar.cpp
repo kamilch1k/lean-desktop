@@ -42,7 +42,7 @@ static Recovery* recovery;
 static std::wstring baseDir, quickSearch;
 #include "Desktop.h"
 static unsigned refreshCount, paintCount;
-static bool winDNative;
+static bool winDNative,appsHotkey;
 
 static int Scale(int n) { return MulDiv(n, dpi, 96); }
 static bool SameRect(const RECT& a, const RECT& b) { return EqualRect(&a, &b) != FALSE; }
@@ -257,6 +257,11 @@ static void Controls(const wchar_t* page) {
     if(GetFileAttributes(path.c_str())==INVALID_FILE_ATTRIBUTES){MessageBox(bar,L"LeanControls.exe is missing. Rebuild or reinstall the full package.",L"Lean Controls",MB_ICONERROR);return;}
     Open(path.c_str(),page);
 }
+static void AppManager(){
+    auto path=baseDir+L"\\LeanApps.exe";
+    if(GetFileAttributes(path.c_str())==INVALID_FILE_ATTRIBUTES){MessageBox(bar,L"LeanApps.exe is missing. Rebuild or reinstall the full package.",L"Lean Apps",MB_ICONERROR);return;}
+    Open(path.c_str());
+}
 static void Search() {
     wchar_t local[MAX_PATH]{}; SHGetFolderPath(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, local);
     std::wifstream file(std::wstring(local) + (companionMode ? L"\\QuickSearch\\lean-hwnd.txt" : L"\\QuickSearch\\hwnd.txt"));
@@ -293,7 +298,7 @@ static void Menu(POINT at, HWND target = nullptr, bool all = false) {
         AppendMenu(menu, MF_STRING, 1, L"Activate / restore"); AppendMenu(menu, MF_STRING, 2, L"Minimize");
         AppendMenu(menu, MF_STRING, 3, L"Close window");
     } else {
-        AppendMenu(menu, MF_STRING, 10, L"QuickSearch"); AppendMenu(menu, MF_STRING, 11, L"Task Manager");
+        AppendMenu(menu, MF_STRING, 10, L"QuickSearch"); AppendMenu(menu, MF_STRING, 20, L"App manager\tCtrl+Alt+Esc");AppendMenu(menu, MF_STRING, 11, L"Windows Task Manager\tCtrl+Shift+Esc");
         AppendMenu(menu, MF_STRING, 12, L"Volume mixer"); AppendMenu(menu, MF_STRING, 13, L"Network connections");
         AppendMenu(menu, MF_STRING, 18, L"Bluetooth devices");
         AppendMenu(menu, MF_STRING, 14, L"Date and time settings");
@@ -322,6 +327,7 @@ static void Menu(POINT at, HWND target = nullptr, bool all = false) {
         case 17: ShowLeanDesktop(); break;
         case 18: Controls(L"--bluetooth"); break;
         case 19: ToggleOverview(); break;
+        case 20: AppManager(); break;
     }
 }
 static void PaintButton(const DRAWITEMSTRUCT* d) {
@@ -354,6 +360,7 @@ static void WriteStatus() {
         << ",\n  \"explorerTaskbarPresent\": " << (FindWindow(L"Shell_TrayWnd",nullptr)?"true":"false")
         << ",\n  \"taskCount\": " << tasks.size() << ",\n  \"desktopItems\": " << desktopItems.size()
         << ",\n  \"iconsResolved\": " << desktopIconsResolved << ",\n  \"winDRegistered\": " << (winDNative?"true":"false")
+        << ",\n  \"appManagerHotkeyRegistered\": " << (appsHotkey?"true":"false")
         << ",\n  \"overviewOpen\": " << (overviewWindow?"true":"false") << ",\n  \"overviewWindows\": " << overviewItems.size()
         << ",\n  \"eventHooks\": " << hooks.size() << ",\n  \"refreshCount\": " << refreshCount
         << ",\n  \"workingSetBytes\": " << memory.WorkingSetSize << ",\n  \"privateBytes\": " << memory.PrivateUsage
@@ -412,7 +419,7 @@ static LRESULT CALLBACK Procedure(HWND w, UINT message, WPARAM wp, LPARAM lp) {
             if (wp == CLOCK_TIMER) Clock();
             if (wp == UPDATE_TIMER) Refresh();
             return 0;
-        case WM_HOTKEY: if (wp == 1) DestroyWindow(w); if (wp == 2 || wp == 3) ShowLeanDesktop(); return 0;
+        case WM_HOTKEY: if (wp == 1) DestroyWindow(w); if (wp == 2 || wp == 3) ShowLeanDesktop();if(wp==4)AppManager();return 0;
         case WM_CONTEXTMENU: {
             POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
             if (p.x == -1 && p.y == -1) { RECT rc; GetWindowRect(w, &rc); p = {rc.left + Scale(16), rc.top}; }
@@ -436,7 +443,7 @@ static LRESULT CALLBACK Procedure(HWND w, UINT message, WPARAM wp, LPARAM lp) {
             closing = true;
             CloseOverview(false);
             for (auto h : hooks) UnhookWinEvent(h); hooks.clear();
-            UnregisterHotKey(w, 1); UnregisterHotKey(w, 2); UnregisterHotKey(w,3); DestroyDesktop(); Restore(recovery); PostQuitMessage(0); return 0;
+            UnregisterHotKey(w, 1); UnregisterHotKey(w, 2); UnregisterHotKey(w,3);UnregisterHotKey(w,4); DestroyDesktop(); Restore(recovery); PostQuitMessage(0); return 0;
     }
     return DefWindowProc(w, message, wp, lp);
 }
@@ -537,6 +544,7 @@ int WINAPI wWinMain(HINSTANCE h, HINSTANCE, PWSTR, int) {
     if (hooks.size() != 6) { MessageBox(bar, L"Could not subscribe to window events. Restoring your taskbar.", L"LeanBar", MB_ICONERROR); DestroyWindow(bar); }
     else {
         RegisterHotKey(bar, 1, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_F12);
+        appsHotkey=RegisterHotKey(bar,4,MOD_CONTROL|MOD_ALT|MOD_NOREPEAT,VK_ESCAPE)!=FALSE;
         if (desktopWindow) RegisterHotKey(bar, 2, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'D');
         ShowWindow(bar, fullscreen ? SW_HIDE : SW_SHOWNOACTIVATE);
         if(takeoverMode && !BeginTakeover()) {

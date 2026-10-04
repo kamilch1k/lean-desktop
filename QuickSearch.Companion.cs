@@ -320,7 +320,7 @@ class QuickSearch : Form
                     return (IntPtr)1;
                 }
             }
-            else if (down && vk == VK_ESCAPE && Held(VK_CONTROL) && !Held(VK_SHIFT))
+            else if (down && vk == VK_ESCAPE && Held(VK_CONTROL) && !Held(VK_SHIFT) && !Held(VK_MENU))
             {
                 BeginInvoke(new Action(Toggle));   // Ctrl+Esc would open Start; Ctrl+Shift+Esc (Task Manager) is untouched
                 return (IntPtr)1;
@@ -473,6 +473,9 @@ class QuickSearch : Form
             .Take(10)
             .Select(x => new Row { Text = "» " + x.w.Value, Go = () => SwitchTo(x.w.Key) })
             .ToList();
+        string appManager = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "LeanApps.exe");
+        if (File.Exists(appManager) && (q.Length == 0 || Score("Lean Apps app manager task manager", ql) >= 0))
+            rows.Add(new Row { Text = "Lean Apps — app manager", Go = () => Process.Start(appManager) });
         rows.AddRange(apps
             .Select(a => new { a, s = q.Length == 0 ? 0 : Score(a[0], ql) })
             .Where(x => x.s >= 0 && (q.Length > 0 || Uses(x.a[1]) > 0 || IsFavorite(x.a[0])))   // empty box: your usual apps
