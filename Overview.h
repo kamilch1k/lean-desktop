@@ -4,7 +4,7 @@
 // One fullscreen GDI canvas with independent app panels. No capture or animation.
 struct OverviewItem { HWND window{}; DWORD pid{}; std::wstring title,group; HICON icon{}; RECT card{}; };
 struct OverviewGroup {
-    std::wstring name; RECT bounds{},view{}; int first=0,count=0,columns=1,height=0,scroll=0,page=0;
+    std::wstring name; RECT bounds{},view{}; int first=0,count=0,columns=1,height=0,scroll=0,page=0,iconSize=64;
 };
 static HWND overviewWindow{},overviewPrevious{};
 static std::vector<OverviewItem> overviewItems;
@@ -33,6 +33,21 @@ static void ScrollOverviewGroup(int index,int position){
     if(index<0 || index>=static_cast<int>(overviewGroups.size()))return;
     auto& g=overviewGroups[index];g.scroll=std::clamp(position,0,OverviewLimit(g));InvalidateRect(overviewWindow,&g.bounds,FALSE);
 }
+struct OverviewDensity { int columns,cardHeight,iconSize; };
+static OverviewDensity FitOverviewGroup(int width,int height,int count){
+    struct Size { int icon,width,preferredHeight,minHeight; };
+    OverviewDensity result{};const int gap=O(8);
+    // Keep the largest icons that fit. Dense groups gain columns and shorter
+    // cards, but titles retain the same font and at least two lines of space.
+    for(const auto& size:{Size{64,178,176,156},Size{48,158,152,134},Size{32,142,132,118}}){
+        int columns=std::max(1,(width+gap)/(O(size.width)+gap));
+        int rows=std::max(1,(count+columns-1)/columns);
+        int fit=(height-(rows-1)*gap)/rows;
+        result={columns,fit>=O(size.minHeight)?std::min(O(size.preferredHeight),fit):O(size.preferredHeight),O(size.icon)};
+        if(fit>=O(size.minHeight))break;
+    }
+    return result;
+}
 static void LayoutOverview(){
     if(!overviewWindow || overviewGroups.empty())return;
     RECT screen=OverviewViewport();const int gap=O(16),pad=O(24);
@@ -47,11 +62,9 @@ static void LayoutOverview(){
     for(int i=0;i<static_cast<int>(overviewGroups.size());++i){
         auto& g=overviewGroups[i];int slot=i%capacity,x=pad+(slot%cols)*(panelWidth+gap),y=screen.top+(slot/cols)*(panelHeight+gap);
         g.page=i/capacity;g.bounds={x,y,x+panelWidth,y+panelHeight};g.view={x+O(10),y+O(42),x+panelWidth-O(16),y+panelHeight-O(10)};
-        int available=std::max(1,static_cast<int>(g.view.right-g.view.left)),cardGap=O(8),cardHeight=O(176);
-        g.columns=std::max(1,(available+cardGap)/(O(178)+cardGap));
-        int itemRows=(g.count+g.columns-1)/g.columns;
-        int fitHeight=(g.view.bottom-g.view.top-(itemRows-1)*cardGap)/itemRows;
-        if(fitHeight>=O(156))cardHeight=std::min(cardHeight,fitHeight); // Fit modest groups while keeping icons and text large.
+        int available=std::max(1,static_cast<int>(g.view.right-g.view.left)),cardGap=O(8);
+        auto density=FitOverviewGroup(available,g.view.bottom-g.view.top,g.count);
+        g.columns=density.columns;g.iconSize=density.iconSize;int cardHeight=density.cardHeight;
         int cardWidth=(available-(g.columns-1)*cardGap)/g.columns;
         for(int j=0;j<g.count;++j){
             int left=g.view.left+(j%g.columns)*(cardWidth+cardGap),top=(j/g.columns)*(cardHeight+cardGap);
@@ -132,10 +145,11 @@ static void PaintOverview(HDC dc){
             if(!IntersectRect(&clipped,&card,&g.view))continue;
             SetDCBrushColor(dc,i==overviewSelected?RGB(39,63,72):RGB(38,45,54));FillRect(dc,&card,static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
             if(i==overviewSelected){SetDCBrushColor(dc,RGB(101,220,193));FrameRect(dc,&card,static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));}
-            int center=(card.left+card.right)/2;RECT tile{center-O(40),card.top+O(10),center+O(40),card.top+O(90)};
+            int center=(card.left+card.right)/2,tileSize=g.iconSize+O(16),left=center-tileSize/2;
+            RECT tile{left,card.top+O(10),left+tileSize,card.top+O(10)+tileSize};
             SetDCBrushColor(dc,RGB(78,89,103));FillRect(dc,&tile,static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
-            if(item.icon)DrawIconEx(dc,tile.left+O(8),tile.top+O(8),item.icon,O(64),O(64),0,nullptr,DI_NORMAL);
-            RECT label{card.left+O(9),card.top+O(102),card.right-O(9),card.bottom-O(7)};SetTextColor(dc,RGB(238,243,248));
+            if(item.icon)DrawIconEx(dc,tile.left+O(8),tile.top+O(8),item.icon,g.iconSize,g.iconSize,0,nullptr,DI_NORMAL);
+            RECT label{card.left+O(9),tile.bottom+O(12),card.right-O(9),card.bottom-O(7)};SetTextColor(dc,RGB(238,243,248));
             DrawText(dc,item.title.c_str(),-1,&label,DT_WORDBREAK|DT_CENTER|DT_END_ELLIPSIS|DT_NOPREFIX);
         }
         RestoreDC(dc,saved);

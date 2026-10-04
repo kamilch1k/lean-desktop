@@ -65,7 +65,7 @@ int wmain(int argc,wchar_t** argv) {
     check(ExactProcessTitle(12,{{12,L"Tab one"},{12,L"Tab two"}}).empty() && ExactProcessTitle(14,{{12,L"Tab one"}}).empty(),"ambiguous or child-process audio does not guess a title");
     std::vector<HWND> overviewFixtures;
     for (int i=0;i<12;++i) {
-        auto title=(i<4?L"Project ":i<8?L"Folder ":L"Document ")+std::to_wstring(i%4+1);
+        auto title=(i<8?L"Project ":i<11?L"Folder ":L"Document ")+std::to_wstring(i+1);
         HWND window=CreateWindow(L"STATIC",title.c_str(),WS_OVERLAPPEDWINDOW,40,40,360,220,nullptr,nullptr,instance,nullptr);
         ShowWindow(window,SW_SHOWNOACTIVATE);overviewFixtures.push_back(window);
     }
@@ -79,10 +79,12 @@ int wmain(int argc,wchar_t** argv) {
     SetWindowPos(overviewWindow,nullptr,40,40,1100,760,SWP_NOZORDER|SWP_NOACTIVATE);
     check(overviewGroups.size()==3 && overviewGroups[0].name==L"Editor" && overviewGroups[2].name==L"Roblox Studio","overview sorts and separates application groups");
     check(!TaskWindow(overviewWindow),"overview excludes itself from task switching");
+    check(overviewGroups[2].iconSize==O(32) && overviewGroups[1].iconSize==O(48) && overviewGroups[0].iconSize==O(64),"crowded groups shrink icons independently; sparse groups stay large");
     SelectOverview(11);check(overviewGroups[2].scroll>0 && overviewGroups[0].scroll==0,"only selected app group scrolls to its last card");
     SendMessage(overviewWindow,WM_KEYDOWN,VK_HOME,0);check(overviewSelected==0 && overviewGroups[0].scroll==0,"Home returns to first card");
-    std::vector<HWND> few{overviewFixtures[0],overviewFixtures[4],overviewFixtures[8]};RefreshOverview(few);
+    std::vector<HWND> few{overviewFixtures[0],overviewFixtures[8],overviewFixtures[11]};RefreshOverview(few);
     check(overviewGroups.size()==3 && std::all_of(overviewGroups.begin(),overviewGroups.end(),[](const auto& group){return OverviewLimit(group)==0;}),"small app groups have no scrolling");
+    check(std::all_of(overviewGroups.begin(),overviewGroups.end(),[](const auto& group){return group.iconSize==O(64);}),"icons grow back after windows close");
     // Restore test identities for the removed fixtures, then verify title updates.
     RefreshOverview(overviewFixtures);
     for(auto& item:overviewItems)item.group=item.title.find(L"Project")==0?L"Roblox Studio":item.title.find(L"Folder")==0?L"File explorers":L"Editor";

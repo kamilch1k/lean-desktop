@@ -16,7 +16,7 @@ LeanBar is written in C++ using Win32 controls and GDI. QuickSearch is a C# WinF
 - Win+D to show the desktop and return to the previous window.
 - QuickSearch app/command launcher, Windows-key access, and screenshots.
 - Large Alt+Tab switcher with 48px icons and contrast for white icons.
-- Win+Tab overview with 64px icons, large window titles, and separate application groups, including Roblox Studio and file explorers. No animations or live thumbnails.
+- Win+Tab overview with large window titles and separate application groups, including Roblox Studio and file explorers. Icons adapt from 64px to 48px or 32px as a group fills up; titles stay the same readable size. No animations or live thumbnails.
 - Native on-demand sound mixer, Bluetooth device controls, and Wi-Fi connections.
 - A recovery process that restores Explorer if the main desktop process crashes.
 - Optional sign-in startup plus Start Lean Desktop and Restore Windows shortcuts.
