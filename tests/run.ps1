@@ -26,6 +26,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Native integration tests failed.' }
     & .\build\tests\RenderSwitcher.exe (Join-Path $bin 'QuickSearch.Companion.exe') (Join-Path $bin 'alt-tab-preview.png')
     if ($LASTEXITCODE -ne 0) { throw 'Switcher rendering failed.' }
+    & .\build\tests\InputLanguage.exe (Join-Path $bin 'QuickSearch.Companion.exe')
+    if ($LASTEXITCODE -ne 0) { throw 'Input-language switching failed.' }
     Add-Type -AssemblyName System.Drawing
     foreach ($panel in 'sound','bluetooth','network') {
         $render = Join-Path $bin ($panel + '-preview.png')

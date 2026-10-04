@@ -10,5 +10,7 @@ cl /nologo /O2 /W4 /wd4459 /std:c++17 /EHsc /MT /D_WIN32_WINNT=0x0A00 tests\Nati
 if errorlevel 1 exit /b 1
 "%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:exe /out:build\tests\RenderSwitcher.exe tests\RenderSwitcher.cs
 if errorlevel 1 exit /b 1
+"%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:exe /out:build\tests\InputLanguage.exe tests\InputLanguage.cs
+if errorlevel 1 exit /b 1
 popd
 exit /b 0

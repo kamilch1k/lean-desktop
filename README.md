@@ -103,6 +103,7 @@ The original development installation successfully ran its sign-in command repea
 |---|---|
 | Launcher | Win alone, Win+S, Ctrl+Esc, or QuickSearch button |
 | Clear the search input | Ctrl+Backspace |
+| Switch input language / keyboard layout | Win+Space; Win+Shift+Space cycles backward |
 | Show desktop / return | Win+D; Ctrl+Alt+D is also available |
 | Switch windows | Alt+Tab; Shift+Alt+Tab reverses direction |
 | Grouped window overview | Win+Tab, or taskbar context menu: Window overview |
@@ -134,6 +135,7 @@ Restoration preserves the prerequisite `AutoRestartShell=0` configuration. Retur
 - Some Store apps, Windows shortcuts, and shell integrations expect Explorer. Opening such a feature may restart it. LeanBar does not continuously kill Explorer or ongoing file operations.
 - The companion's global keyboard hook is inherited from QuickSearch; its behavior can be affected by elevated apps and security software. Do not disable antivirus protections to run the project.
 - The keyboard hook runs on its own message thread so UI/icon work cannot block it. Modifier state is reconciled after missed key releases; the hook is periodically renewed when no Win/Alt key is held.
+- Win+Space cycles installed keyboard layouts for the focused app, without an Explorer popup or changes to the configured language list. Each Space press advances once. Apps can reject a layout-change request; elevated apps may require their own language shortcut because of Windows message permissions.
 
 ## Resource measurements
 

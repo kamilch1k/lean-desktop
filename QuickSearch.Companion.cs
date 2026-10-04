@@ -31,6 +31,16 @@ class QuickSearch : Form
     [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] static extern bool AllowSetForegroundWindow(uint processId);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern IntPtr GetKeyboardLayout(uint threadId);
+    [DllImport("user32.dll")] static extern int GetKeyboardLayoutList(int count, [Out] IntPtr[] layouts);
+    [StructLayout(LayoutKind.Sequential)] struct GuiThreadInfo
+    {
+        public int Size, Flags;
+        public IntPtr Active, Focus, Capture, MenuOwner, MoveSize, Caret;
+        public int Left, Top, Right, Bottom;
+    }
+    [DllImport("user32.dll")] static extern bool GetGUIThreadInfo(uint threadId, ref GuiThreadInfo info);
     [DllImport("user32.dll")] static extern bool RegisterHotKey(IntPtr hWnd, int id, uint mods, uint vk);
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string className, string title);
@@ -51,7 +61,7 @@ class QuickSearch : Form
     const uint GW_OWNER = 4;
     const int WH_KEYBOARD_LL = 13, WM_KEYDOWN = 0x100, WM_SYSKEYDOWN = 0x104, WM_HOTKEY = 0x312;
     const int VK_LWIN = 0x5B, VK_RWIN = 0x5C, VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12, VK_LMENU = 0xA4, VK_RMENU = 0xA5,
-              VK_TAB = 0x09, VK_ESCAPE = 0x1B, VK_SNAPSHOT = 0x2C, VK_S = 0x53, LLKHF_INJECTED = 0x10;
+              VK_TAB = 0x09, VK_SPACE = 0x20, VK_ESCAPE = 0x1B, VK_SNAPSHOT = 0x2C, VK_S = 0x53, LLKHF_INJECTED = 0x10;
     static readonly uint ToggleMsg = RegisterWindowMessage("QuickSearch.Toggle");   // sent by "--toggle" to the running copy
     const byte VK_MASK = 0xE8;   // unassigned key: makes Windows think Win was used in a combo, so Start stays shut
     const uint KEYEVENTF_KEYUP = 2, MOD_ALT = 1, MOD_NOREPEAT = 0x4000;
@@ -74,7 +84,7 @@ class QuickSearch : Form
     IntPtr hook;
     Thread keyboardThread;
     bool winDown, winUsed, winSDone, switching;
-    bool desktopKeyDown, overviewKeyDown;
+    bool desktopKeyDown, overviewKeyDown, languageKeyDown;
     Switcher switcher;
     TextBox box = new TextBox();
     ListBox list = new ListBox();
@@ -139,7 +149,7 @@ class QuickSearch : Form
         if (hook != IntPtr.Zero) UnhookWindowsHookEx(hook);
         winDown = Held(VK_LWIN) || Held(VK_RWIN);
         winUsed = winDown;
-        winSDone = desktopKeyDown = overviewKeyDown = switching = false;
+        winSDone = desktopKeyDown = overviewKeyDown = languageKeyDown = switching = false;
         BeginInvoke(new Action(switcher.Cancel));
         hook = SetWindowsHookEx(WH_KEYBOARD_LL, hookProc, GetModuleHandle(null), 0);
         return hook != IntPtr.Zero;
@@ -181,8 +191,28 @@ class QuickSearch : Form
 
     static bool Held(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
 
+    static bool SwitchInputLanguage(IntPtr window, bool reverse)
+    {
+        if (window == IntPtr.Zero) return false;
+        uint pid;
+        uint thread = GetWindowThreadProcessId(window, out pid);
+        if (thread == 0) return false;
+        int count = GetKeyboardLayoutList(0, null);
+        if (count < 2) return false;
+        var layouts = new IntPtr[count];
+        count = GetKeyboardLayoutList(layouts.Length, layouts);
+        if (count < 2) return false;
+        int current = Array.IndexOf(layouts, GetKeyboardLayout(thread), 0, count);
+        int next = current < 0 ? (reverse ? count - 1 : 0) : (current + (reverse ? count - 1 : 1)) % count;
+        var info = new GuiThreadInfo { Size = Marshal.SizeOf(typeof(GuiThreadInfo)) };
+        if (GetGUIThreadInfo(thread, ref info) && info.Focus != IntPtr.Zero) window = info.Focus;
+        // Ask the focused app to activate its next installed layout. Posting never
+        // waits for its UI thread and requires neither Explorer nor a shell popup.
+        return PostMessage(window, 0x0050 /* WM_INPUTLANGCHANGEREQUEST */, IntPtr.Zero, layouts[next]);
+    }
+
     // All global keys in one hook: Win (alone) / Win+S / Ctrl+Esc = QuickSearch, Alt+Tab = switcher,
-    // Win+Shift+S / PrtScn = screenshot. Everything else passes straight through.
+    // Win+Space = input language, Win+Shift+S / PrtScn = screenshot. Everything else passes straight through.
     IntPtr OnKeyboard(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode >= 0 && (Marshal.ReadInt32(lParam, 8) & LLKHF_INJECTED) == 0)
@@ -194,8 +224,21 @@ class QuickSearch : Form
             // leave Win marked down forever and silently disable Alt+Tab.
             if (vk != VK_LWIN && vk != VK_RWIN && !Held(VK_LWIN) && !Held(VK_RWIN)) winDown = false;
             if (vk != VK_TAB && !Held(VK_TAB)) overviewKeyDown = false;
+            if (vk != VK_SPACE && !Held(VK_SPACE)) languageKeyDown = false;
             if (vk == 0x44 && !down && desktopKeyDown) { desktopKeyDown = false; return (IntPtr)1; }
             if (vk == VK_TAB && !down && overviewKeyDown) { overviewKeyDown = false; return (IntPtr)1; }
+            if (vk == VK_SPACE && languageKeyDown)
+            {
+                if (!down) languageKeyDown = false;
+                return (IntPtr)1; // Suppress repeat and key-up, even if Win was released first.
+            }
+            if (vk == VK_SPACE && down && winDown && !Held(VK_CONTROL) && !Held(VK_MENU))
+            {
+                winUsed = languageKeyDown = true;
+                Mask();
+                SwitchInputLanguage(GetForegroundWindow(), Held(VK_SHIFT));
+                return (IntPtr)1;
+            }
             if (vk == VK_TAB && down && winDown && !Held(VK_CONTROL) && !Held(VK_MENU))
             {
                 IntPtr nativeBar = FindWindow("LeanBar.Window", null);
