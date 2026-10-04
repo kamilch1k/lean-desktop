@@ -11,6 +11,8 @@ struct BtDevice { DeviceInformation info{nullptr}; std::wstring name; bool paire
 static std::vector<BtDevice> bluetoothDevices;
 static HWND bluetoothList{}, bluetoothAudioCombo{}, wifiList{}, wifiAdapterCombo{};
 static std::vector<AudioOutput> bluetoothOutputs;
+static HWND bluetoothRadioLabel{},bluetoothAudioStatus{};
+static std::wstring bluetoothRadioStatus=L"Checking Bluetooth...",selectedBluetoothOutput;
 static HANDLE wlan{};
 static std::vector<WLAN_INTERFACE_INFO> wifiAdapters;
 struct WifiNetwork { std::wstring name,profile; DOT11_SSID ssid{}; DOT11_AUTH_ALGORITHM auth{}; DOT11_CIPHER_ALGORITHM cipher{}; bool connected=false,secure=false; ULONG signal=0; };
@@ -44,9 +46,28 @@ static void ListRow(HWND list,int i,const std::wstring& name,const std::wstring&
 static bool DeviceFlag(const DeviceInformation& d,const wchar_t* property) {
     try{auto value=d.Properties().TryLookup(property);return value && winrt::unbox_value<bool>(value);}catch(...){return false;}
 }
+static void UpdateBluetoothDeviceButtons(){
+    int i=bluetoothList?ListView_GetNextItem(bluetoothList,-1,LVNI_SELECTED):-1;
+    bool selected=i>=0 && i<static_cast<int>(bluetoothDevices.size());
+    EnableWindow(GetDlgItem(content,214),selected && !bluetoothDevices[i].paired);
+    EnableWindow(GetDlgItem(content,215),selected && bluetoothDevices[i].paired);
+}
+static void UpdateBluetoothAudioButtons(){
+    int i=bluetoothAudioCombo?static_cast<int>(SendMessage(bluetoothAudioCombo,CB_GETCURSEL,0,0)):-1;
+    bool selected=i>=0 && i<static_cast<int>(bluetoothOutputs.size());
+    bool connected=selected && bluetoothOutputs[i].state==DEVICE_STATE_ACTIVE;
+    bool current=selected && bluetoothOutputs[i].id==CurrentOutput();
+    EnableWindow(GetDlgItem(content,217),selected && !connected && !(bluetoothOutputs[i].state&DEVICE_STATE_DISABLED));
+    EnableWindow(GetDlgItem(content,218),connected);
+    EnableWindow(GetDlgItem(content,219),connected && !current && !busy);
+    if(selected)selectedBluetoothOutput=bluetoothOutputs[i].id;
+    const wchar_t* state=!selected?L"No compatible headphone output found. Pair headphones, then refresh.":current?L"Connected and selected for playback.":connected?L"Connected. Choose Use for sound to make this your playback device.":L"Not connected. Turn on your headphones and choose Connect.";
+    if(bluetoothAudioStatus)SetWindowText(bluetoothAudioStatus,state);
+}
 static void FillBluetoothList() {
     if(!bluetoothList)return;ListView_DeleteAllItems(bluetoothList);
     for(int i=0;i<static_cast<int>(bluetoothDevices.size());++i) {auto& d=bluetoothDevices[i];ListRow(bluetoothList,i,d.name,d.connected?L"Connected":d.paired?L"Paired":L"Ready to pair");}
+    UpdateBluetoothDeviceButtons();
 }
 static std::vector<BtDevice> CollectBluetoothDevices(bool discover) {
         std::vector<BtDevice> found;
@@ -69,29 +90,35 @@ static std::vector<BtDevice> CollectBluetoothDevices(bool discover) {
 static void ReadBluetooth(bool discover) {
     RunAsync([discover]{
         auto found=CollectBluetoothDevices(discover);
-        std::wstring radios;
-        for(auto r:Radio::GetRadiosAsync().get()) if(r.Kind()==RadioKind::Bluetooth) radios+=std::wstring(r.Name().c_str())+(r.State()==RadioState::On?L": on. ":L": off. ");
-        Deliver([found=std::move(found)]() mutable {bluetoothDevices=std::move(found);if(page==1)FillBluetoothList();});
-        return radios+(discover?L"Scan complete. Select a device to pair.":L"Select a paired audio output to connect your headphones.");
+        bool hasRadio=false,on=false;
+        for(auto r:Radio::GetRadiosAsync().get())if(r.Kind()==RadioKind::Bluetooth){hasRadio=true;on=on || r.State()==RadioState::On;}
+        std::wstring radios=!hasRadio?L"No Bluetooth adapter found":on?L"Bluetooth is on":L"Bluetooth is off";
+        Deliver([found=std::move(found),radios]() mutable {bluetoothDevices=std::move(found);bluetoothRadioStatus=radios;if(page==1){FillBluetoothList();SetWindowText(bluetoothRadioLabel,radios.c_str());}});
+        return discover?L"Scan complete. Select a device, then choose Pair.":L"Paired devices are listed above. Connect headphones in the Audio section.";
     },discover?L"Scanning for eight seconds. Put the new device in pairing mode...":L"Reading Bluetooth devices...");
 }
-static void BuildBluetooth() {
-    Add(L"BUTTON",L"Bluetooth on",0,16,12,128,30,210);Add(L"BUTTON",L"Bluetooth off",0,154,12,128,30,211);Add(L"BUTTON",L"Find devices",0,292,12,128,30,212);
-    bluetoothList=MakeList(213,54,225,{{L"Device",330},{L"State",180}});
+static void BuildBluetooth(bool scan) {
+    Section(L"Bluetooth",6);
+    bluetoothRadioLabel=Add(L"STATIC",demo?L"Bluetooth is on":bluetoothRadioStatus.c_str(),0,16,38,532,24);
+    Add(L"BUTTON",L"Turn on",0,16,70,110,30,210);Add(L"BUTTON",L"Turn off",0,138,70,110,30,211);Add(L"BUTTON",L"Find new devices",0,260,70,174,30,212);
+    Section(L"Devices",116);
+    bluetoothList=MakeList(213,150,160,{{L"Device",345},{L"Status",164}});
     if(demo) {ListRow(bluetoothList,0,L"Wireless headphones",L"Paired");ListRow(bluetoothList,1,L"Bluetooth mouse",L"Connected");}
     else FillBluetoothList();
-    Add(L"BUTTON",L"Pair selected",0,16,292,145,30,214);Add(L"BUTTON",L"Forget selected",0,174,292,145,30,215);
-    Add(L"STATIC",L"Headphone audio connection",0,16,342,500,24);
-    bluetoothAudioCombo=Add(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL,16,374,530,230,216);
+    Add(L"BUTTON",L"Pair selected",0,16,320,145,30,214);Add(L"BUTTON",L"Forget selected",0,174,320,145,30,215);
+    Section(L"Headphone audio",366);
+    bluetoothAudioCombo=Add(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL,16,402,532,230,216);
     bluetoothOutputs.clear();
-    if(demo) bluetoothOutputs.push_back({L"demo",L"Wireless headphones",DEVICE_STATE_UNPLUGGED,true});
-    else for(auto& output:ReadOutputs(true))if(output.bluetooth)bluetoothOutputs.push_back(output);
-    for(auto& output:bluetoothOutputs){std::wstring text=output.name+(output.state==DEVICE_STATE_ACTIVE?L" - connected":L" - disconnected");SendMessage(bluetoothAudioCombo,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(text.c_str()));}
-    SendMessage(bluetoothAudioCombo,CB_SETCURSEL,0,0);
-    Add(L"BUTTON",L"Connect audio",0,16,412,150,30,217);Add(L"BUTTON",L"Disconnect audio",0,178,412,150,30,218);
-    Add(L"STATIC",L"Pair a new device above. Audio connect works with drivers that expose Bluetooth connection controls.",0,16,463,530,50);
-    ContentHeight(530);
-    if(!demo)ReadBluetooth(false);
+    for(auto& output:demo?DemoOutputs():ReadOutputs(true))if(output.bluetooth)bluetoothOutputs.push_back(output);
+    int chosen=0;auto current=CurrentOutput();
+    for(int i=0;i<static_cast<int>(bluetoothOutputs.size());++i){auto& output=bluetoothOutputs[i];std::wstring text=output.name+L"  -  "+OutputState(output,current);SendMessage(bluetoothAudioCombo,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(text.c_str()));if(output.id==selectedBluetoothOutput || (selectedBluetoothOutput.empty() && output.id==current))chosen=i;}
+    SendMessage(bluetoothAudioCombo,CB_SETCURSEL,chosen,0);
+    bluetoothAudioStatus=Add(L"STATIC",L"",0,16,439,532,39);
+    Add(L"BUTTON",L"Connect",0,16,488,140,30,217);Add(L"BUTTON",L"Disconnect",0,168,488,140,30,218);Add(L"BUTTON",L"Use for sound",0,320,488,168,30,219);
+    Add(L"STATIC",L"Pairing remembers the device. Connecting makes it available. Use for sound selects where Windows plays audio.",0,16,535,532,46);
+    ContentHeight(590);UpdateBluetoothDeviceButtons();UpdateBluetoothAudioButtons();
+    Status(L"Choose a device above to pair it. Headphone connection and playback controls are below.");
+    if(!demo && scan)ReadBluetooth(false);
 }
 static void PairBluetooth(bool forget) {
     int i=ListView_GetNextItem(bluetoothList,-1,LVNI_SELECTED);
@@ -116,7 +143,9 @@ static std::wstring SetBluetoothRadio(bool on) {
     if(access!=RadioAccessStatus::Allowed)return L"Windows denied permission to change Bluetooth radio state.";
     bool found=false;
     for(auto radio:Radio::GetRadiosAsync().get())if(radio.Kind()==RadioKind::Bluetooth){found=true;if(radio.SetStateAsync(on?RadioState::On:RadioState::Off).get()!=RadioAccessStatus::Allowed)return L"Windows could not change the Bluetooth radio state.";}
-    return found?(on?L"Bluetooth is on. Refresh to update devices.":L"Bluetooth is off."):L"No Bluetooth radio is available.";
+    std::wstring state=found?(on?L"Bluetooth is on":L"Bluetooth is off"):L"No Bluetooth adapter found";
+    Deliver([state]{bluetoothRadioStatus=state;if(page==1 && bluetoothRadioLabel)SetWindowText(bluetoothRadioLabel,state.c_str());});
+    return state;
 }
 static void CALLBACK WifiChanged(PWLAN_NOTIFICATION_DATA data,PVOID) {
     if(data->NotificationSource!=WLAN_NOTIFICATION_SOURCE_ACM)return;

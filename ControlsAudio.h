@@ -20,6 +20,7 @@ static std::vector<AudioRow> audioRows;
 static ComPtr<IAudioEndpointVolume> master;
 static HWND outputCombo{}, masterSlider{}, masterMute{}, masterValue{};
 static std::wstring selectedOutput;
+static std::wstring demoDefaultOutput=L"demo-speakers";
 static HWND audioViewport{};
 static std::vector<Placed> audioPlacements;
 static int audioScroll=0,audioHeight=0;
@@ -31,7 +32,7 @@ static void ScrollAudio(){
     for(auto& c:audioPlacements)MoveWindow(c.hwnd,S(c.x),S(c.y)-audioScroll,S(c.w),S(c.h),TRUE);
 }
 static void LayoutAudio(){
-    if(!audioViewport)return;RECT r{};GetClientRect(content,&r);MoveWindow(audioViewport,0,S(193),r.right,std::max(S(40),static_cast<int>(r.bottom)-S(198)),TRUE);ScrollAudio();
+    if(!audioViewport)return;RECT r{};GetClientRect(content,&r);MoveWindow(audioViewport,0,S(249),r.right,std::max(S(40),static_cast<int>(r.bottom)-S(254)),TRUE);ScrollAudio();
 }
 static HWND AudioAdd(const wchar_t* cls,const wchar_t* text,DWORD style,int x,int y,int w,int h,int id=0){
     HWND control=CreateWindowEx(0,cls,text,WS_CHILD|WS_VISIBLE|(wcscmp(cls,L"STATIC")?WS_TABSTOP:0)|style,S(x),S(y)-audioScroll,S(w),S(h),audioViewport,reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),appInstance,nullptr);
@@ -185,6 +186,13 @@ static std::wstring DefaultOutput() {
     Check(e->GetDefaultAudioEndpoint(eRender,eMultimedia,&d)); Check(d->GetId(&id));
     std::wstring result=id; CoTaskMemFree(id); return result;
 }
+static std::wstring CurrentOutput(){if(demo)return demoDefaultOutput;try{return DefaultOutput();}catch(...){return L"";}}
+static std::vector<AudioOutput> DemoOutputs(){return {{L"demo-speakers",L"Speakers",DEVICE_STATE_ACTIVE,false},{L"demo-headphones",L"Headphones",DEVICE_STATE_ACTIVE,true},{L"demo-wireless",L"Wireless headphones",DEVICE_STATE_UNPLUGGED,true}};}
+static std::wstring OutputState(const AudioOutput& output,const std::wstring& current){
+    if(output.state==DEVICE_STATE_ACTIVE)return output.id==current?L"Playing here":L"Available";
+    if(output.state&DEVICE_STATE_DISABLED)return L"Disabled in Windows";
+    return L"Disconnected";
+}
 // Windows has no public API for default-output selection. Keep this optional,
 // private COM ABI isolated: failure is reported, never replaced with registry edits.
 struct __declspec(uuid("f8679f50-850a-41cf-9c72-430f290290c8")) OutputPolicy : IUnknown {
@@ -207,6 +215,15 @@ static HRESULT MakeDefaultOutput(const std::wstring& id) {
     if(FAILED(hr)) return hr;
     for(ERole role:{eConsole,eMultimedia,eCommunications}) { hr=policy->SetDefaultEndpoint(id.c_str(),role); if(FAILED(hr)) return hr; }
     return S_OK;
+}
+static void RequestAudioOutput(const std::wstring& id){
+    if(id.empty())return;
+    auto devices=demo?DemoOutputs():ReadOutputs();
+    auto found=std::find_if(devices.begin(),devices.end(),[&](const auto& d){return d.id==id;});
+    if(found==devices.end() || found->state!=DEVICE_STATE_ACTIVE){Status(L"This output is unavailable. Connect it first, then choose it again.");return;}
+    auto name=found->name;
+    if(demo){demoDefaultOutput=id;BuildPage(false);Status(L"Playing through: "+name);return;}
+    RunAsync([id,name]{Check(MakeDefaultOutput(id));if(DefaultOutput()!=id)throw E_FAIL;return L"Playing through: "+name+L". Apps with their own output setting may need that changed too.";},L"Switching audio output...",true);
 }
 static std::wstring SessionName(IAudioSessionControl* control,IAudioSessionControl2* info) {
     if(info->IsSystemSoundsSession()==S_OK) return L"System sounds";
@@ -243,23 +260,31 @@ static void VolumeControls(int id,int y,const std::wstring& label,float level,BO
 static void BuildSound() {
     WNDCLASS cls{};cls.lpfnWndProc=AudioListProcedure;cls.hInstance=appInstance;cls.lpszClassName=L"LeanControls.AudioList";cls.hCursor=LoadCursor(nullptr,IDC_ARROW);cls.hbrBackground=background;RegisterClass(&cls);
     audioViewport=CreateWindowEx(WS_EX_CONTROLPARENT,cls.lpszClassName,L"",WS_CHILD|WS_VISIBLE|WS_VSCROLL|WS_CLIPCHILDREN,0,0,1,1,content,nullptr,appInstance,nullptr);
-    outputs=demo?std::vector<AudioOutput>{{L"demo",L"Headphones",DEVICE_STATE_ACTIVE,false}}:ReadOutputs();
-    Add(L"STATIC",L"Output device",0,16,12,170,22);
-    outputCombo=Add(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL,16,39,380,250,110);
-    Add(L"BUTTON",L"Use as default",0,408,38,140,28,111);
-    if(selectedOutput.empty() && !demo) {try{selectedOutput=DefaultOutput();}catch(...){} }
+    outputs=demo?DemoOutputs():ReadOutputs();
+    std::wstring current=CurrentOutput(),currentName=L"No active output";
+    for(const auto& output:outputs)if(output.id==current)currentName=output.name;
+    Section(L"Sound output",6);
+    Add(L"STATIC",(L"Playing through: "+currentName).c_str(),SS_ENDELLIPSIS|SS_NOPREFIX,16,36,532,24,112);
+    outputCombo=Add(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL,16,68,365,250,110);
+    HWND useOutput=Add(L"BUTTON",L"Play through this",0,393,67,155,30,111);
+    SendMessage(outputCombo,CB_SETDROPPEDWIDTH,S(532),0);
+    if(selectedOutput.empty())selectedOutput=current;
     int chosen=-1;
     for(int i=0;i<static_cast<int>(outputs.size());++i) {
-        std::wstring name=outputs[i].name;
-        if(outputs[i].state!=DEVICE_STATE_ACTIVE) name+=L" (disconnected / disabled)";
+        std::wstring name=outputs[i].name+L"  -  "+OutputState(outputs[i],current);
         SendMessage(outputCombo,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(name.c_str()));
         if(outputs[i].id==selectedOutput) chosen=i;
     }
+    if(chosen<0){for(int i=0;i<static_cast<int>(outputs.size());++i)if(outputs[i].id==current){chosen=i;break;}}
     if(chosen<0 && !outputs.empty()) chosen=0;
-    if(chosen<0) {Status(L"No audio output devices are available.");return;}
+    if(chosen<0) {EnableWindow(useOutput,FALSE);selectedOutput.clear();SetAudioWatch(L"");Status(L"No audio output devices are available. Connect an output, then Refresh.");return;}
     SendMessage(outputCombo,CB_SETCURSEL,chosen,0); selectedOutput=outputs[chosen].id;
-    float level=.65f; BOOL muted=FALSE;
-    if(!demo) {
+    bool available=outputs[chosen].state==DEVICE_STATE_ACTIVE,isCurrent=selectedOutput==current;
+    EnableWindow(useOutput,available && !isCurrent && !busy);
+    const wchar_t* hint=!available?L"Connect or enable this device to use its volume controls.":isCurrent?L"This is your current playback device. Adjust its volume and apps below.":L"Previewing this device's mixer. Click Play through this to send audio here.";
+    Add(L"STATIC",hint,SS_NOPREFIX,16,107,532,38);
+    float level=available?.65f:0; BOOL muted=FALSE;
+    if(!demo && available) {
         ComPtr<IMMDevice> device; auto e=AudioEnumerator(); Check(e->GetDevice(selectedOutput.c_str(),&device));
         Check(device->Activate(__uuidof(IAudioEndpointVolume),CLSCTX_ALL,nullptr,&master));
         master->GetMasterVolumeLevelScalar(&level); master->GetMute(&muted);
@@ -273,10 +298,11 @@ static void BuildSound() {
             DWORD pid=0;info->GetProcessId(&pid);
             AudioRow row;row.name=SessionName(control.Get(),info.Get());row.appName=row.name;row.volume=volume;row.pid=pid;row.state=state;row.icon=SessionIcon(pid);audioRows.push_back(std::move(row));
         }
-    } else for(const wchar_t* name:{L"Google Chrome",L"Discord",L"Music",L"Game",L"Google Chrome",L"System sounds",L"Video player",L"Voice chat",L"Browser - separate session",L"Other audio"}){AudioRow row;row.name=name;row.pid=4242;row.state=AudioSessionStateActive;row.icon=CopyIcon(LoadIcon(nullptr,IDI_APPLICATION));audioRows.push_back(std::move(row));}
+    } else if(demo && available)for(const wchar_t* name:{L"Google Chrome",L"Discord",L"Music",L"Game",L"Google Chrome",L"System sounds",L"Video player",L"Voice chat",L"Browser - separate session",L"Other audio"}){AudioRow row;row.name=name;row.pid=4242;row.state=AudioSessionStateActive;row.icon=CopyIcon(LoadIcon(nullptr,IDI_APPLICATION));audioRows.push_back(std::move(row));}
     if(!demo)SyncAudioTitles();
-    VolumeControls(120,85,L"Master volume",level,muted,masterSlider,masterMute,masterValue);
-    Add(L"STATIC",L"Audio sessions on this output",0,16,164,460,24);
+    VolumeControls(120,154,L"Volume on this device",level,muted,masterSlider,masterMute,masterValue);
+    EnableWindow(masterSlider,available);EnableWindow(masterMute,available);
+    Section(L"App volumes on this device",216);
     int y=8;
     for(int i=0;i<static_cast<int>(audioRows.size());++i) {
         auto& row=audioRows[i];level=.5f;muted=FALSE;
@@ -291,10 +317,10 @@ static void BuildSound() {
         row.slider=AudioAdd(TRACKBAR_CLASS,L"",TBS_HORZ|TBS_NOTICKS,68,y+69,478,30,1000+2*i);SendMessage(row.slider,TBM_SETRANGE,TRUE,MAKELPARAM(0,100));SendMessage(row.slider,TBM_SETPOS,TRUE,static_cast<int>(level*100+.5f));SendMessage(row.slider,TBM_SETPAGESIZE,0,5);
         y+=119;
     }
-    if(audioRows.empty()) AudioAdd(L"STATIC",L"Play audio in an app to show it here.",0,16,y,530,44);
+    if(audioRows.empty()) AudioAdd(L"STATIC",available?L"No apps are using this output yet. Start audio in an app to see it here.":L"This device is disconnected or disabled.",0,16,y,530,44);
     audioHeight=y+50;ContentHeight(0);LayoutAudio();
     if(!demo){
-        SetAudioWatch(selectedOutput);
+        SetAudioWatch(available?selectedOutput:current);
         for(auto range:std::vector<std::pair<DWORD,DWORD>>{{EVENT_OBJECT_NAMECHANGE,EVENT_OBJECT_NAMECHANGE},{EVENT_OBJECT_DESTROY,EVENT_OBJECT_HIDE}}){
             auto hook=SetWinEventHook(range.first,range.second,nullptr,AudioWindowEvent,0,0,WINEVENT_OUTOFCONTEXT|WINEVENT_SKIPOWNPROCESS);if(hook)audioTitleHooks.push_back(hook);
         }

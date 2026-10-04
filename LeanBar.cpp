@@ -46,6 +46,14 @@ static bool winDNative;
 
 static int Scale(int n) { return MulDiv(n, dpi, 96); }
 static bool SameRect(const RECT& a, const RECT& b) { return EqualRect(&a, &b) != FALSE; }
+static bool SetSessionWorkArea(const RECT& area) {
+    RECT value=area;
+    if(!SystemParametersInfo(SPI_SETWORKAREA,0,&value,0))return false;
+    // SPIF_SENDCHANGE synchronously waits on other apps (for example a busy
+    // Blender). Notify them asynchronously so startup and recovery stay usable.
+    SendNotifyMessage(HWND_BROADCAST,WM_SETTINGCHANGE,SPI_SETWORKAREA,0);
+    return true;
+}
 static MONITORINFO Primary() {
     MONITORINFO mi{ sizeof(mi) }; GetMonitorInfo(MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY), &mi); return mi;
 }
@@ -124,12 +132,12 @@ static void Restore(Recovery* r) {
     if (!r) return;
     if (r->areaChanged) {
         RECT now{}; SystemParametersInfo(SPI_GETWORKAREA, 0, &now, 0);
-        if (SameRect(now, r->applied)) SystemParametersInfo(SPI_SETWORKAREA, 0, &r->before, SPIF_SENDCHANGE);
+        if (SameRect(now, r->applied)) SetSessionWorkArea(r->before);
         r->areaChanged = FALSE;
     }
     if (r->showTaskbar && IsWindow(r->taskbar)) {
         wchar_t cls[64]{}; GetClassName(r->taskbar, cls, 64);
-        if (!wcscmp(cls, L"Shell_TrayWnd") || !wcscmp(cls, L"LeanBar.RecoveryFixture")) ShowWindow(r->taskbar, SW_SHOWNA);
+        if (!wcscmp(cls, L"Shell_TrayWnd") || !wcscmp(cls, L"LeanBar.RecoveryFixture")) ShowWindowAsync(r->taskbar, SW_SHOWNA);
     }
     r->showTaskbar = FALSE;
     if (r->restartExplorer && !FindWindow(L"Shell_TrayWnd", nullptr)) {
@@ -190,14 +198,14 @@ static void PositionBar() {
             if (recovery->areaChanged) Restore(recovery);
             recovery->taskbar = shell; recovery->showTaskbar = IsWindowVisible(shell);
         }
-        ShowWindow(shell, SW_HIDE);
+        ShowWindowAsync(shell, SW_HIDE);
     } else if (replaceMode && !shell) {
         if (!recovery->areaChanged) {
             SystemParametersInfo(SPI_GETWORKAREA, 0, &recovery->before, 0);
             recovery->applied = recovery->before;
             recovery->applied.bottom = mi.rcMonitor.bottom - barHeight;
             recovery->areaChanged = TRUE; // guard knows intent before the mutation
-            SystemParametersInfo(SPI_SETWORKAREA, 0, &recovery->applied, SPIF_SENDCHANGE);
+            if(!SetSessionWorkArea(recovery->applied))recovery->areaChanged=FALSE;
         }
         pos = mi.rcMonitor;
     }

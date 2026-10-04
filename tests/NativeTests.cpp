@@ -3,6 +3,24 @@
 #undef wWinMain
 #include <gdiplus.h>
 #include <iostream>
+static HANDLE notificationEntered,notificationRelease;
+static LRESULT CALLBACK SlowSettingsWindow(HWND w,UINT message,WPARAM wp,LPARAM lp){
+    if(message==WM_SETTINGCHANGE){SetEvent(notificationEntered);WaitForSingleObject(notificationRelease,2000);return 0;}
+    if(message==WM_TIMER || message==WM_CLOSE){DestroyWindow(w);return 0;}
+    if(message==WM_DESTROY){PostQuitMessage(0);return 0;}
+    return DefWindowProc(w,message,wp,lp);
+}
+static int SettingsFixture(const std::wstring& name){
+    HANDLE ready=OpenEvent(EVENT_MODIFY_STATE,FALSE,(name+L".Ready").c_str());
+    notificationEntered=OpenEvent(EVENT_MODIFY_STATE,FALSE,(name+L".Entered").c_str());
+    notificationRelease=OpenEvent(SYNCHRONIZE,FALSE,(name+L".Release").c_str());
+    if(!ready || !notificationEntered || !notificationRelease)return 1;
+    WNDCLASS cls{};cls.hInstance=GetModuleHandle(nullptr);cls.lpfnWndProc=SlowSettingsWindow;cls.lpszClassName=L"LeanBar.SlowSettingsFixture";RegisterClass(&cls);
+    HWND w=CreateWindow(cls.lpszClassName,L"Test-owned slow settings listener",WS_OVERLAPPEDWINDOW,0,0,160,80,nullptr,nullptr,cls.hInstance,nullptr);
+    if(!w)return 2;ShowWindow(w,SW_SHOWNOACTIVATE);SetTimer(w,1,15000,nullptr);SetEvent(ready);
+    MSG msg{};while(GetMessage(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessage(&msg);}
+    CloseHandle(ready);CloseHandle(notificationEntered);CloseHandle(notificationRelease);return 0;
+}
 
 static void Pump(DWORD duration) {
     DWORD until = GetTickCount()+duration; MSG msg;
@@ -23,10 +41,32 @@ static bool Render(HWND window, const std::wstring& path) {
 }
 int wmain(int argc,wchar_t** argv) {
     if(argc!=3) return 10;
+    if(!wcscmp(argv[1],L"--slow-settings"))return SettingsFixture(argv[2]);
     instance=GetModuleHandle(nullptr); SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     std::wstring out=argv[1],fixtures=argv[2]; int failures=0;
     auto check=[&](bool ok,const char* label){std::cout<<(ok?"PASS ":"FAIL ")<<label<<"\n"; if(!ok)++failures;};
+    {
+        std::wstring name=L"Local\\LeanBar.SettingsTest."+std::to_wstring(GetCurrentProcessId());
+        HANDLE ready=CreateEvent(nullptr,TRUE,FALSE,(name+L".Ready").c_str()),entered=CreateEvent(nullptr,TRUE,FALSE,(name+L".Entered").c_str()),release=CreateEvent(nullptr,TRUE,FALSE,(name+L".Release").c_str());
+        wchar_t self[MAX_PATH]{};GetModuleFileName(nullptr,self,MAX_PATH);
+        std::wstring command=L"\""+std::wstring(self)+L"\" --slow-settings "+name;STARTUPINFO start{sizeof(start)};PROCESS_INFORMATION child{};
+        bool started=CreateProcess(self,&command[0],nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,nullptr,&start,&child)!=FALSE;
+        check(started && WaitForSingleObject(ready,3000)==WAIT_OBJECT_0,"slow foreign settings listener starts");
+        if(started){
+            RECT area{};SystemParametersInfo(SPI_GETWORKAREA,0,&area,0);auto before=GetTickCount64();
+            bool ok=SetSessionWorkArea(area); // Same rectangle: no work-area change.
+            auto elapsed=GetTickCount64()-before;
+            if(!ok || elapsed>=700)std::cout<<"Work-area update: success="<<ok<<", error="<<GetLastError()<<", elapsed="<<elapsed<<" ms\n";
+            check(ok && elapsed<700,"work-area notification does not wait on another app");
+            check(WaitForSingleObject(entered,1000)==WAIT_OBJECT_0,"other apps still receive settings notification");
+            HWND slow=FindWindow(L"LeanBar.SlowSettingsFixture",nullptr);before=GetTickCount64();HICON icon=CopyWindowIcon(slow);
+            check(icon && GetTickCount64()-before<700,"a stalled app cannot block taskbar icon lookup");if(icon)DestroyIcon(icon);
+            SetEvent(release);EnumWindows([](HWND w,LPARAM pid)->BOOL{DWORD owner=0;GetWindowThreadProcessId(w,&owner);if(owner==static_cast<DWORD>(pid))PostMessage(w,WM_CLOSE,0,0);return TRUE;},child.dwProcessId);
+            WaitForSingleObject(child.hProcess,3000);CloseHandle(child.hProcess);CloseHandle(child.hThread);
+        }
+        CloseHandle(ready);CloseHandle(entered);CloseHandle(release);
+    }
     check(CreateDesktopView(true),"native desktop creation");
     desktopFolder=fixtures; RefreshDesktop();
     for(int i=0;i<100 && desktopIconsResolved<desktopItems.size();++i) Pump(50);

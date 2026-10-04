@@ -22,7 +22,7 @@
 #include <gdiplus.h>
 #include <winrt/base.h>
 static HWND mainWindow{}, content{}, statusLabel{}, tabs{}, refreshButton{};
-static HFONT uiFont{};
+static HFONT uiFont{},sectionFont{};
 static HINSTANCE appInstance{};
 static int page=0,scrollOffset=0,contentHeight=0;
 static UINT controlDpi=96;
@@ -30,6 +30,7 @@ static bool demo=false,busy=false;
 static HBRUSH background{};
 struct Placed {HWND hwnd;int x,y,w,h;};
 static std::vector<Placed> controls;
+static void BuildPage(bool scanBluetooth=true);
 static int S(int n){return MulDiv(n,controlDpi,96);}
 static void Check(HRESULT hr){if(FAILED(hr))throw hr;}
 static std::wstring ErrorText(HRESULT hr){
@@ -42,22 +43,26 @@ static void Deliver(std::function<void()> action){
     auto value=new std::function<void()>(std::move(action));
     if(!PostMessage(mainWindow,WM_APP+2,0,reinterpret_cast<LPARAM>(value)))delete value;
 }
-static void RunAsync(std::function<std::wstring()> action,const std::wstring& text){
+static void RunAsync(std::function<std::wstring()> action,const std::wstring& text,bool refreshAfter=false){
     if(busy){Status(L"Wait for the current operation to finish.");return;}
     busy=true;EnableWindow(refreshButton,FALSE);Status(text);
-    std::thread([action=std::move(action)]{
+    int sourcePage=page;
+    std::thread([action=std::move(action),sourcePage,refreshAfter]{
         std::wstring result;
         try{winrt::init_apartment(winrt::apartment_type::multi_threaded);result=action();}
         catch(const winrt::hresult_error& e){result=ErrorText(e.code());}
         catch(HRESULT hr){result=ErrorText(hr);}
         catch(...){result=L"The operation could not complete.";}
-        Deliver([result]{busy=false;EnableWindow(refreshButton,TRUE);Status(result);});
+        Deliver([result,sourcePage,refreshAfter]{busy=false;EnableWindow(refreshButton,TRUE);if(refreshAfter || page!=sourcePage)BuildPage(false);if(page==sourcePage)Status(result);});
         winrt::uninit_apartment();
     }).detach();
 }
 static HWND Add(const wchar_t* cls,const wchar_t* text,DWORD style,int x,int y,int w,int h,int id=0){
     HWND control=CreateWindowEx(0,cls,text,WS_CHILD|WS_VISIBLE|(wcscmp(cls,L"STATIC")?WS_TABSTOP:0)|style,S(x),S(y)-scrollOffset,S(w),S(h),content,reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),appInstance,nullptr);
     SendMessage(control,WM_SETFONT,reinterpret_cast<WPARAM>(uiFont),TRUE);controls.push_back({control,x,y,w,h});return control;
+}
+static HWND Section(const wchar_t* text,int y){
+    HWND label=Add(L"STATIC",text,SS_NOPREFIX,16,y,532,28);SendMessage(label,WM_SETFONT,reinterpret_cast<WPARAM>(sectionFont),TRUE);return label;
 }
 static void ScrollLayout(){
     RECT rc{};GetClientRect(content,&rc);int limit=std::max(0,S(contentHeight)-static_cast<int>(rc.bottom));scrollOffset=std::clamp(scrollOffset,0,limit);
@@ -96,7 +101,7 @@ static bool AskText(const std::wstring& title,const std::wstring& label,std::wst
 #include "ControlsAudio.h"
 #include "ControlsWireless.h"
 
-static void BuildPage(){
+static void BuildPage(bool scanBluetooth){
     KillTimer(mainWindow,7); // A queued Sound rebuild must not outlive the selected page.
     SetWindowRedraw(content,FALSE);
     ClearAudio();if(page!=0){audioScroll=0;SetAudioWatch(L"");}
@@ -104,7 +109,7 @@ static void BuildPage(){
     masterSlider=masterMute=masterValue=outputCombo=nullptr;
     bluetoothList=bluetoothAudioCombo=wifiList=wifiAdapterCombo=nullptr;
     scrollOffset=0;contentHeight=520;
-    try{if(page==0)BuildSound();else if(page==1)BuildBluetooth();else BuildNetwork();}
+    try{if(page==0)BuildSound();else if(page==1)BuildBluetooth(scanBluetooth);else BuildNetwork();}
     catch(const winrt::hresult_error& e){Status(ErrorText(e.code()));}
     catch(HRESULT hr){Status(ErrorText(hr));}
     catch(...){Status(L"This panel could not load. Refresh to retry.");}
@@ -114,15 +119,20 @@ static void BuildPage(){
     RedrawWindow(content,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_FRAME|RDW_ALLCHILDREN|RDW_UPDATENOW);
 }
 static void HandleCommand(int id,int notification){
+    if(id==110 && notification==CBN_SELCHANGE){
+        int i=static_cast<int>(SendMessage(outputCombo,CB_GETCURSEL,0,0));
+        if(i>=0 && i<static_cast<int>(outputs.size())){selectedOutput=outputs[i].id;audioScroll=0;PostMessage(mainWindow,WM_APP+9,0,0);}return;
+    }
+    if(id==111){RequestAudioOutput(selectedOutput);return;}
+    if(id==216 && notification==CBN_SELCHANGE){UpdateBluetoothAudioButtons();return;}
+    if(id==219){int i=static_cast<int>(SendMessage(bluetoothAudioCombo,CB_GETCURSEL,0,0));if(i>=0 && i<static_cast<int>(bluetoothOutputs.size()))RequestAudioOutput(bluetoothOutputs[i].id);return;}
     if(demo)return;
-    if(id==110 && notification==CBN_SELCHANGE){int i=static_cast<int>(SendMessage(outputCombo,CB_GETCURSEL,0,0));if(i>=0 && i<static_cast<int>(outputs.size()))selectedOutput=outputs[i].id;BuildPage();}
-    else if(id==111){HRESULT hr=MakeDefaultOutput(selectedOutput);Status(FAILED(hr)?L"Could not change the default output: "+ErrorText(hr):L"Default output changed for playback and calls.");}
-    else if(id==121){HRESULT hr=master?master->SetMute(SendMessage(masterMute,BM_GETCHECK,0,0)==BST_CHECKED,&AudioContext):E_FAIL;if(FAILED(hr))Status(ErrorText(hr));}
+    if(id==121){HRESULT hr=master?master->SetMute(SendMessage(masterMute,BM_GETCHECK,0,0)==BST_CHECKED,&AudioContext):E_FAIL;if(FAILED(hr))Status(ErrorText(hr));}
     else if(id>=1001 && (id-1001)%2==0){int i=(id-1001)/2;if(i<static_cast<int>(audioRows.size())){auto& row=audioRows[i];if(row.volume){HRESULT hr=row.volume->SetMute(SendMessage(row.mute,BM_GETCHECK,0,0)==BST_CHECKED,&AudioContext);if(FAILED(hr))Status(ErrorText(hr));}}}
-    else if(id==210 || id==211)RunAsync([id]{return SetBluetoothRadio(id==210);},L"Changing Bluetooth radio state...");
+    else if(id==210 || id==211)RunAsync([id]{return SetBluetoothRadio(id==210);},L"Changing Bluetooth radio state...",true);
     else if(id==212)ReadBluetooth(true);
     else if(id==214 || id==215)PairBluetooth(id==215);
-    else if(id==217 || id==218){int i=static_cast<int>(SendMessage(bluetoothAudioCombo,CB_GETCURSEL,0,0));if(i>=0 && i<static_cast<int>(bluetoothOutputs.size())){auto endpoint=bluetoothOutputs[i].id;RunAsync([endpoint,id]{return BluetoothAudioRequest(endpoint,id==217);},id==217?L"Connecting headphones...":L"Disconnecting headphones...");}else Status(L"No supported Bluetooth audio endpoint. Pair your headphones, then refresh.");}
+    else if(id==217 || id==218){int i=static_cast<int>(SendMessage(bluetoothAudioCombo,CB_GETCURSEL,0,0));if(i>=0 && i<static_cast<int>(bluetoothOutputs.size())){auto endpoint=bluetoothOutputs[i].id;RunAsync([endpoint,id]{return BluetoothAudioRequest(endpoint,id==217);},id==217?L"Connecting headphones...":L"Disconnecting headphones...",true);}else Status(L"Pair your headphones first, then refresh this page.");}
     else if(id==310 && notification==CBN_SELCHANGE){adapterIndex=static_cast<int>(SendMessage(wifiAdapterCombo,CB_GETCURSEL,0,0));BuildPage();}
     else if(id==311 && !wifiAdapters.empty()){DWORD error=WlanScan(wlan,&wifiAdapters[adapterIndex].InterfaceGuid,nullptr,nullptr,nullptr);Status(error?L"Scan unavailable: "+ErrorText(HRESULT_FROM_WIN32(error)):L"Scanning nearby networks...");}
     else if(id==312 || id==313)WifiRadio(id==312);
@@ -131,6 +141,7 @@ static void HandleCommand(int id,int notification){
 }
 static LRESULT CALLBACK ContentProcedure(HWND w,UINT msg,WPARAM wp,LPARAM lp){
     switch(msg){
+    case WM_NOTIFY:if(reinterpret_cast<NMHDR*>(lp)->hwndFrom==bluetoothList)UpdateBluetoothDeviceButtons();return 0;
     case WM_COMMAND:try{HandleCommand(LOWORD(wp),HIWORD(wp));}catch(HRESULT hr){Status(ErrorText(hr));}catch(const winrt::hresult_error& e){Status(ErrorText(e.code()));}return 0;
     case WM_HSCROLL:AudioSlider(reinterpret_cast<HWND>(lp));return 0;
     case WM_VSCROLL:{int command=LOWORD(wp);if(command==SB_LINEUP)scrollOffset-=S(32);if(command==SB_LINEDOWN)scrollOffset+=S(32);if(command==SB_PAGEUP)scrollOffset-=S(220);if(command==SB_PAGEDOWN)scrollOffset+=S(220);if(command==SB_THUMBTRACK || command==SB_THUMBPOSITION){SCROLLINFO si{sizeof(si),SIF_TRACKPOS};GetScrollInfo(w,SB_VERT,&si);scrollOffset=si.nTrackPos;}ScrollLayout();return 0;}
@@ -146,7 +157,7 @@ static LRESULT CALLBACK MainProcedure(HWND w,UINT msg,WPARAM wp,LPARAM lp){
     switch(msg){
     case WM_CREATE:mainWindow=w;return 0;
     case WM_SIZE:if(content)LayoutMain();return 0;
-    case WM_GETMINMAXINFO:{auto mm=reinterpret_cast<MINMAXINFO*>(lp);mm->ptMinTrackSize={S(595),S(390)};return 0;}
+    case WM_GETMINMAXINFO:{auto mm=reinterpret_cast<MINMAXINFO*>(lp);mm->ptMinTrackSize={S(595),S(530)};return 0;}
     case WM_COMMAND:if(LOWORD(wp)==1 && !busy)BuildPage();return 0;
     case WM_NOTIFY:if(reinterpret_cast<NMHDR*>(lp)->hwndFrom==tabs && reinterpret_cast<NMHDR*>(lp)->code==TCN_SELCHANGE){page=TabCtrl_GetCurSel(tabs);BuildPage();}return 0;
     case WM_APP+2:{std::unique_ptr<std::function<void()>> action(reinterpret_cast<std::function<void()>*>(lp));(*action)();return 0;}
@@ -155,7 +166,8 @@ static LRESULT CALLBACK MainProcedure(HWND w,UINT msg,WPARAM wp,LPARAM lp){
     case WM_APP+5:{wchar_t reason[1024]{};WlanReasonCodeToString(static_cast<DWORD>(wp),1024,reason,nullptr);Status(L"Connection failed: "+std::wstring(reason));return 0;}
     case WM_APP+7:if(page==0)SetTimer(w,7,200,nullptr);return 0;
     case WM_APP+8:if(page==0 && !GetCapture())SyncAudioLevels();return 0;
-    case WM_TIMER:if(wp==7){if(GetCapture())return 0;KillTimer(w,7);if(page==0)BuildPage();}if(wp==9){KillTimer(w,9);if(page==0)SyncAudioTitles();}return 0;
+    case WM_APP+9:if(page==0)BuildPage();return 0;
+    case WM_TIMER:if(wp==7){if(GetCapture() || (outputCombo && SendMessage(outputCombo,CB_GETDROPPEDSTATE,0,0)))return 0;KillTimer(w,7);if(page==0)BuildPage();}if(wp==9){KillTimer(w,9);if(page==0)SyncAudioTitles();}return 0;
     case WM_CLOSE:DestroyWindow(w);return 0;
     case WM_DESTROY:PostQuitMessage(0);return 0;
     }return DefWindowProc(w,msg,wp,lp);
@@ -226,6 +238,7 @@ int WINAPI wWinMain(HINSTANCE h,HINSTANCE,PWSTR,int){
     mainWindow=CreateWindowEx(0,name,L"Lean Controls",WS_OVERLAPPEDWINDOW|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,620,730,nullptr,nullptr,h,nullptr);
     if(!mainWindow)return 1;controlDpi=GetDpiForWindow(mainWindow);
     uiFont=CreateFont(-S(13),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");
+    sectionFont=CreateFont(-S(17),0,0,0,FW_SEMIBOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");
     cls.lpfnWndProc=ContentProcedure;cls.lpszClassName=L"LeanControls.Content";RegisterClass(&cls);
     content=CreateWindowEx(WS_EX_CONTROLPARENT,cls.lpszClassName,L"",WS_CHILD|WS_VISIBLE|WS_VSCROLL|WS_CLIPCHILDREN,0,0,1,1,mainWindow,nullptr,h,nullptr);
     tabs=CreateWindow(WC_TABCONTROL,L"",WS_CHILD|WS_VISIBLE|WS_TABSTOP|TCS_BUTTONS,0,0,1,1,mainWindow,nullptr,h,nullptr);
@@ -233,7 +246,7 @@ int WINAPI wWinMain(HINSTANCE h,HINSTANCE,PWSTR,int){
     refreshButton=CreateWindow(L"BUTTON",L"Refresh",WS_CHILD|WS_VISIBLE|WS_TABSTOP,0,0,1,1,mainWindow,reinterpret_cast<HMENU>(1),h,nullptr);
     statusLabel=CreateWindow(L"STATIC",L"",WS_CHILD|WS_VISIBLE,0,0,1,1,mainWindow,nullptr,h,nullptr);
     for(HWND w:{tabs,refreshButton,statusLabel})SendMessage(w,WM_SETFONT,reinterpret_cast<WPARAM>(uiFont),TRUE);
-    SetWindowPos(mainWindow,nullptr,0,0,S(620),S(730),SWP_NOMOVE|SWP_NOZORDER);LayoutMain();BuildPage();ShowWindow(mainWindow,SW_SHOW);UpdateWindow(mainWindow);
+    SetWindowPos(mainWindow,nullptr,0,0,S(620),S(780),SWP_NOMOVE|SWP_NOZORDER);LayoutMain();BuildPage();ShowWindow(mainWindow,SW_SHOW);UpdateWindow(mainWindow);
     if(!uiTest.empty()){int result=TestLiveSound(uiTest);DestroyWindow(mainWindow);ExitProcess(result);}
     if(!render.empty()) {
         ShowWindow(mainWindow,SW_SHOWNOACTIVATE);
@@ -249,6 +262,24 @@ int WINAPI wWinMain(HINSTANCE h,HINSTANCE,PWSTR,int){
                 PumpControls(30);
                 int children=0;for(HWND child=GetWindow(content,GW_CHILD);child;child=GetWindow(child,GW_HWNDNEXT))++children;
                 layoutOk=layoutOk && children==static_cast<int>(controls.size())+(audioViewport?1:0) && page==next;
+            }
+            if(page==0){
+                // Mixer selection and playback selection are distinct actions.
+                auto before=demoDefaultOutput;
+                SendMessage(outputCombo,CB_SETCURSEL,1,0);HandleCommand(110,CBN_SELCHANGE);PumpControls(30);
+                layoutOk=layoutOk && selectedOutput==L"demo-headphones" && demoDefaultOutput==before && IsWindowEnabled(GetDlgItem(content,111));
+                HandleCommand(111,BN_CLICKED);
+                layoutOk=layoutOk && demoDefaultOutput==L"demo-headphones" && !IsWindowEnabled(GetDlgItem(content,111));
+                SendMessage(outputCombo,CB_SETCURSEL,2,0);HandleCommand(110,CBN_SELCHANGE);PumpControls(30);
+                layoutOk=layoutOk && !IsWindowEnabled(masterSlider) && !IsWindowEnabled(GetDlgItem(content,111));
+                HandleCommand(111,BN_CLICKED);layoutOk=layoutOk && demoDefaultOutput==L"demo-headphones";
+                selectedOutput=demoDefaultOutput;BuildPage(false);
+            }
+            if(page==1){
+                SendMessage(bluetoothAudioCombo,CB_SETCURSEL,1,0);UpdateBluetoothAudioButtons();
+                layoutOk=layoutOk && IsWindowEnabled(GetDlgItem(content,217)) && !IsWindowEnabled(GetDlgItem(content,219));
+                SendMessage(bluetoothAudioCombo,CB_SETCURSEL,0,0);UpdateBluetoothAudioButtons();
+                layoutOk=layoutOk && !IsWindowEnabled(GetDlgItem(content,217)) && IsWindowEnabled(GetDlgItem(content,218)) && IsWindowEnabled(GetDlgItem(content,219));
             }
         }
         if(demo && page==0 && !audioRows.empty()){
