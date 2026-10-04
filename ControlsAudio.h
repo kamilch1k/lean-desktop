@@ -13,7 +13,7 @@
 #include "WindowNames.h"
 using Microsoft::WRL::ComPtr;
 
-struct AudioOutput { std::wstring id, name; DWORD state = 0; bool bluetooth = false; };
+struct AudioOutput { std::wstring id, name; DWORD state = 0; bool bluetooth = false; std::wstring container; };
 struct AudioRow { std::wstring name, appName; ComPtr<ISimpleAudioVolume> volume; HWND slider{}, mute{}, value{}, titleLabel{}; HICON icon{}; DWORD pid=0; AudioSessionState state=AudioSessionStateInactive; };
 static std::vector<AudioOutput> outputs;
 static std::vector<AudioRow> audioRows;
@@ -151,6 +151,14 @@ static std::wstring AudioName(IMMDevice* device) {
     }
     return name;
 }
+static std::wstring ContainerKey(const GUID& value){
+    if(IsEqualGUID(value,GUID_NULL))return L"";wchar_t text[40]{};StringFromGUID2(value,text,40);return LowerName(text);
+}
+static std::wstring AudioContainer(IMMDevice* device){
+    ComPtr<IPropertyStore> props;PROPVARIANT value{};std::wstring result;
+    if(SUCCEEDED(device->OpenPropertyStore(STGM_READ,&props)) && SUCCEEDED(props->GetValue(PKEY_Device_ContainerId,&value)) && value.vt==VT_CLSID && value.puuid)result=ContainerKey(*value.puuid);
+    PropVariantClear(&value);return result;
+}
 static ComPtr<IKsControl> BluetoothControl(IMMDevice* endpoint) {
     ComPtr<IDeviceTopology> topology; ComPtr<IConnector> connector; LPWSTR adapterId=nullptr;
     Check(endpoint->Activate(__uuidof(IDeviceTopology),CLSCTX_ALL,nullptr,&topology));
@@ -177,7 +185,7 @@ static std::vector<AudioOutput> ReadOutputs(bool detectBluetooth=false) {
         ComPtr<IMMDevice> d; LPWSTR id=nullptr; DWORD state=0;
         if(FAILED(devices->Item(i,&d)) || FAILED(d->GetId(&id))) continue;
         d->GetState(&state);
-        result.push_back({id,AudioName(d.Get()),state,detectBluetooth && SupportsBluetooth(d.Get())}); CoTaskMemFree(id);
+        result.push_back({id,AudioName(d.Get()),state,detectBluetooth && SupportsBluetooth(d.Get()),detectBluetooth?AudioContainer(d.Get()):L""}); CoTaskMemFree(id);
     }
     return result;
 }
@@ -187,7 +195,7 @@ static std::wstring DefaultOutput() {
     std::wstring result=id; CoTaskMemFree(id); return result;
 }
 static std::wstring CurrentOutput(){if(demo)return demoDefaultOutput;try{return DefaultOutput();}catch(...){return L"";}}
-static std::vector<AudioOutput> DemoOutputs(){return {{L"demo-speakers",L"Speakers",DEVICE_STATE_ACTIVE,false},{L"demo-headphones",L"Headphones",DEVICE_STATE_ACTIVE,true},{L"demo-wireless",L"Wireless headphones",DEVICE_STATE_UNPLUGGED,true}};}
+static std::vector<AudioOutput> DemoOutputs(){return {{L"demo-speakers",L"Speakers",DEVICE_STATE_ACTIVE,false,L"demo-speakers-container"},{L"demo-headphones",L"Headphones",DEVICE_STATE_ACTIVE,true,L"demo-headphones-container"},{L"demo-wireless",L"Wireless headphones",DEVICE_STATE_UNPLUGGED,true,L"demo-wireless-container"}};}
 static std::wstring OutputState(const AudioOutput& output,const std::wstring& current){
     if(output.state==DEVICE_STATE_ACTIVE)return output.id==current?L"Playing here":L"Available";
     if(output.state&DEVICE_STATE_DISABLED)return L"Disabled in Windows";

@@ -107,7 +107,7 @@ static void BuildPage(bool scanBluetooth){
     ClearAudio();if(page!=0){audioScroll=0;SetAudioWatch(L"");}
     for(auto& c:controls)DestroyWindow(c.hwnd);controls.clear();
     masterSlider=masterMute=masterValue=outputCombo=nullptr;
-    bluetoothList=bluetoothAudioCombo=wifiList=wifiAdapterCombo=nullptr;
+    bluetoothList=wifiList=wifiAdapterCombo=nullptr;
     scrollOffset=0;contentHeight=520;
     try{if(page==0)BuildSound();else if(page==1)BuildBluetooth(scanBluetooth);else BuildNetwork();}
     catch(const winrt::hresult_error& e){Status(ErrorText(e.code()));}
@@ -124,15 +124,12 @@ static void HandleCommand(int id,int notification){
         if(i>=0 && i<static_cast<int>(outputs.size())){selectedOutput=outputs[i].id;audioScroll=0;PostMessage(mainWindow,WM_APP+9,0,0);}return;
     }
     if(id==111){RequestAudioOutput(selectedOutput);return;}
-    if(id==216 && notification==CBN_SELCHANGE){UpdateBluetoothAudioButtons();return;}
-    if(id==219){int i=static_cast<int>(SendMessage(bluetoothAudioCombo,CB_GETCURSEL,0,0));if(i>=0 && i<static_cast<int>(bluetoothOutputs.size()))RequestAudioOutput(bluetoothOutputs[i].id);return;}
     if(demo)return;
     if(id==121){HRESULT hr=master?master->SetMute(SendMessage(masterMute,BM_GETCHECK,0,0)==BST_CHECKED,&AudioContext):E_FAIL;if(FAILED(hr))Status(ErrorText(hr));}
     else if(id>=1001 && (id-1001)%2==0){int i=(id-1001)/2;if(i<static_cast<int>(audioRows.size())){auto& row=audioRows[i];if(row.volume){HRESULT hr=row.volume->SetMute(SendMessage(row.mute,BM_GETCHECK,0,0)==BST_CHECKED,&AudioContext);if(FAILED(hr))Status(ErrorText(hr));}}}
     else if(id==210 || id==211)RunAsync([id]{return SetBluetoothRadio(id==210);},L"Changing Bluetooth radio state...",true);
     else if(id==212)ReadBluetooth(true);
     else if(id==214 || id==215)PairBluetooth(id==215);
-    else if(id==217 || id==218){int i=static_cast<int>(SendMessage(bluetoothAudioCombo,CB_GETCURSEL,0,0));if(i>=0 && i<static_cast<int>(bluetoothOutputs.size())){auto endpoint=bluetoothOutputs[i].id;RunAsync([endpoint,id]{return BluetoothAudioRequest(endpoint,id==217);},id==217?L"Connecting headphones...":L"Disconnecting headphones...",true);}else Status(L"Pair your headphones first, then refresh this page.");}
     else if(id==310 && notification==CBN_SELCHANGE){adapterIndex=static_cast<int>(SendMessage(wifiAdapterCombo,CB_GETCURSEL,0,0));BuildPage();}
     else if(id==311 && !wifiAdapters.empty()){DWORD error=WlanScan(wlan,&wifiAdapters[adapterIndex].InterfaceGuid,nullptr,nullptr,nullptr);Status(error?L"Scan unavailable: "+ErrorText(HRESULT_FROM_WIN32(error)):L"Scanning nearby networks...");}
     else if(id==312 || id==313)WifiRadio(id==312);
@@ -142,6 +139,7 @@ static void HandleCommand(int id,int notification){
 static LRESULT CALLBACK ContentProcedure(HWND w,UINT msg,WPARAM wp,LPARAM lp){
     switch(msg){
     case WM_NOTIFY:if(reinterpret_cast<NMHDR*>(lp)->hwndFrom==bluetoothList)UpdateBluetoothDeviceButtons();return 0;
+    case WM_CONTEXTMENU:if(page==1 && reinterpret_cast<HWND>(wp)==bluetoothList){ShowBluetoothMenu({GET_X_LPARAM(lp),GET_Y_LPARAM(lp)});return 0;}break;
     case WM_COMMAND:try{HandleCommand(LOWORD(wp),HIWORD(wp));}catch(HRESULT hr){Status(ErrorText(hr));}catch(const winrt::hresult_error& e){Status(ErrorText(e.code()));}return 0;
     case WM_HSCROLL:AudioSlider(reinterpret_cast<HWND>(lp));return 0;
     case WM_VSCROLL:{int command=LOWORD(wp);if(command==SB_LINEUP)scrollOffset-=S(32);if(command==SB_LINEDOWN)scrollOffset+=S(32);if(command==SB_PAGEUP)scrollOffset-=S(220);if(command==SB_PAGEDOWN)scrollOffset+=S(220);if(command==SB_THUMBTRACK || command==SB_THUMBPOSITION){SCROLLINFO si{sizeof(si),SIF_TRACKPOS};GetScrollInfo(w,SB_VERT,&si);scrollOffset=si.nTrackPos;}ScrollLayout();return 0;}
@@ -220,6 +218,7 @@ static int Probe(const std::wstring& path){
     std::thread bt([&report]{
         try{winrt::init_apartment(winrt::apartment_type::multi_threaded);auto radios=Radio::GetRadiosAsync().get();int count=0;for(auto r:radios)if(r.Kind()==RadioKind::Bluetooth)++count;report<<L"Bluetooth radios: "<<count<<L"\n";
             auto devices=CollectBluetoothDevices(false);report<<L"Paired Bluetooth devices: "<<devices.size()<<L"\n";
+            auto audio=ReadOutputs(true);for(auto& device:devices){auto matched=DeviceAudio(device,audio);report<<L"Device: "<<device.name<<L"; audio matches="<<matched.size()<<L"; reconnect controls="<<std::count_if(matched.begin(),matched.end(),[](auto& a){return a.bluetooth;})<<L"\n";}
         }catch(const winrt::hresult_error& e){report<<L"Bluetooth probe: "<<ErrorText(e.code())<<L"\n";}winrt::uninit_apartment();
     });bt.join();
     WifiNetwork sample;sample.name=L"A&B <home>";sample.secure=true;sample.auth=DOT11_AUTH_ALGO_RSNA_PSK;sample.ssid.uSSIDLength=3;sample.ssid.ucSSID[0]='A';sample.ssid.ucSSID[1]='&';sample.ssid.ucSSID[2]='B';auto xml=WifiProfile(sample,L"pass<&word");bool escaped=xml.find(L"A&amp;B &lt;home&gt;")!=std::wstring::npos && xml.find(L"pass&lt;&amp;word")!=std::wstring::npos && xml.find(L"412642")!=std::wstring::npos;report<<(escaped?L"PASS":L"FAIL")<<L" Wi-Fi XML escaping and raw SSID bytes\n";if(!escaped)++failures;
@@ -276,10 +275,16 @@ int WINAPI wWinMain(HINSTANCE h,HINSTANCE,PWSTR,int){
                 selectedOutput=demoDefaultOutput;BuildPage(false);
             }
             if(page==1){
-                SendMessage(bluetoothAudioCombo,CB_SETCURSEL,1,0);UpdateBluetoothAudioButtons();
-                layoutOk=layoutOk && IsWindowEnabled(GetDlgItem(content,217)) && !IsWindowEnabled(GetDlgItem(content,219));
-                SendMessage(bluetoothAudioCombo,CB_SETCURSEL,0,0);UpdateBluetoothAudioButtons();
-                layoutOk=layoutOk && !IsWindowEnabled(GetDlgItem(content,217)) && IsWindowEnabled(GetDlgItem(content,218)) && IsWindowEnabled(GetDlgItem(content,219));
+                auto enabled=[](HMENU menu,UINT id){return (GetMenuState(menu,id,MF_BYCOMMAND)&(MF_DISABLED|MF_GRAYED))==0;};
+                auto wireless=DeviceAudio(bluetoothDevices[0],bluetoothOutputs);auto menu=BluetoothDeviceMenu(bluetoothDevices[0],wireless);
+                layoutOk=layoutOk && wireless.size()==1 && wireless[0].id==L"demo-wireless" && enabled(menu,4001) && !enabled(menu,4002) && !enabled(menu,4003);DestroyMenu(menu);
+                auto connected=DeviceAudio(bluetoothDevices[1],bluetoothOutputs);menu=BluetoothDeviceMenu(bluetoothDevices[1],connected);
+                layoutOk=layoutOk && enabled(menu,4001) && enabled(menu,4002) && enabled(menu,4003);DestroyMenu(menu);
+                menu=BluetoothDeviceMenu(bluetoothDevices[2],DeviceAudio(bluetoothDevices[2],bluetoothOutputs));
+                layoutOk=layoutOk && !enabled(menu,4001) && !enabled(menu,4002) && enabled(menu,4011);DestroyMenu(menu);
+                auto unrelated=bluetoothDevices[0];unrelated.container=L"different-physical-device";
+                layoutOk=layoutOk && DeviceAudio(unrelated,bluetoothOutputs).empty(); // Identical names must not route to another headset.
+                ListView_SetItemState(bluetoothList,0,LVIS_SELECTED|LVIS_FOCUSED,LVIS_SELECTED|LVIS_FOCUSED);
             }
         }
         if(demo && page==0 && !audioRows.empty()){
