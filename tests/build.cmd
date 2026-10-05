@@ -14,5 +14,9 @@ if errorlevel 1 exit /b 1
 if errorlevel 1 exit /b 1
 "%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:exe /out:build\tests\InputLanguage.exe tests\InputLanguage.cs
 if errorlevel 1 exit /b 1
+"%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:exe /main:AppLaunchTest /out:build\tests\AppLaunch.exe tests\AppLaunch.cs
+if errorlevel 1 exit /b 1
+"%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe /main:LaunchFixture /out:build\tests\LaunchFixture.exe tests\AppLaunch.cs
+if errorlevel 1 exit /b 1
 popd
 exit /b 0

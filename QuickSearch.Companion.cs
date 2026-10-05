@@ -19,6 +19,101 @@ class Row
     public override string ToString() { return Text; }
 }
 
+// Start applications without delegating the request to explorer.exe. In takeover
+// mode its AppsFolder command can return successfully without opening the app.
+static class AppLauncher
+{
+    [ComImport, Guid("2E941141-7F97-4756-BA1D-9DECDE894A3D"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IApplicationActivationManager
+    {
+        [PreserveSig] int ActivateApplication([MarshalAs(UnmanagedType.LPWStr)] string appId,
+            [MarshalAs(UnmanagedType.LPWStr)] string arguments, uint options, out uint processId);
+        [PreserveSig] int ActivateForFile([MarshalAs(UnmanagedType.LPWStr)] string appId,
+            IntPtr items, [MarshalAs(UnmanagedType.LPWStr)] string verb, out uint processId);
+        [PreserveSig] int ActivateForProtocol([MarshalAs(UnmanagedType.LPWStr)] string appId,
+            IntPtr items, out uint processId);
+    }
+    [DllImport("ole32.dll", ExactSpelling = true)]
+    static extern int CoCreateInstance(ref Guid clsid, IntPtr outer, uint context, ref Guid iid,
+        out IApplicationActivationManager manager);
+    [DllImport("ole32.dll", ExactSpelling = true)]
+    static extern int CoAllowSetForegroundWindow([MarshalAs(UnmanagedType.IUnknown)] object manager, IntPtr reserved);
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    static extern int SHParseDisplayName(string name, IntPtr bindContext, out IntPtr item, uint attributes, out uint actualAttributes);
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct ShellExecuteInfo
+    {
+        public int Size;
+        public uint Mask;
+        public IntPtr Window;
+        public string Verb, File, Parameters, Directory;
+        public int Show;
+        public IntPtr Instance, Item;
+        public string Class;
+        public IntPtr ClassKey;
+        public uint HotKey;
+        public IntPtr Icon, Process;
+    }
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool ShellExecuteEx(ref ShellExecuteInfo info);
+    [DllImport("kernel32.dll")] static extern uint GetProcessId(IntPtr process);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+
+    public static bool IsPackagedApp(string id)
+    {
+        // AppsFolder gives packaged apps a package-family!application ID. A
+        // literal '!' in an ordinary executable/shortcut path is not that ID.
+        int separator = id.IndexOf('!');
+        return separator > 0 && separator < id.Length - 1 && id.IndexOf('_', 0, separator) > 0
+            && id.IndexOfAny(new[] { '\\', '/', ':', ' ' }) < 0;
+    }
+
+    public static uint Start(string id)
+    {
+        if (string.IsNullOrWhiteSpace(id)) throw new ArgumentException("The app has no launch target.");
+        if (!IsPackagedApp(id))
+            return StartShellItem("shell:AppsFolder\\" + id);
+
+        var clsid = new Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C");
+        var iid = typeof(IApplicationActivationManager).GUID;
+        IApplicationActivationManager manager;
+        // Local-server lifetime also permits short-lived launch/test callers.
+        Marshal.ThrowExceptionForHR(CoCreateInstance(ref clsid, IntPtr.Zero, 4, ref iid, out manager));
+        try
+        {
+            CoAllowSetForegroundWindow(manager, IntPtr.Zero);
+            uint process;
+            Marshal.ThrowExceptionForHR(manager.ActivateApplication(id, null, 0, out process));
+            return process;
+        }
+        finally { Marshal.ReleaseComObject(manager); }
+    }
+
+    static uint StartShellItem(string target)
+    {
+        IntPtr item;
+        uint attributes;
+        Marshal.ThrowExceptionForHR(SHParseDisplayName(target, IntPtr.Zero, out item, 0, out attributes));
+        var info = new ShellExecuteInfo {
+            Size = Marshal.SizeOf(typeof(ShellExecuteInfo)),
+            // INVOKEIDLIST preserves shortcut arguments/working directory and
+            // namespace verbs; NOASYNC, NO_UI, NOCLOSEPROCESS report failures.
+            Mask = 0x0000000C | 0x00000100 | 0x00000400 | 0x00000040,
+            Item = item, Show = 1
+        };
+        try
+        {
+            if (!ShellExecuteEx(ref info)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            return info.Process == IntPtr.Zero ? 0 : GetProcessId(info.Process);
+        }
+        finally
+        {
+            if (info.Process != IntPtr.Zero) CloseHandle(info.Process);
+            Marshal.FreeCoTaskMem(item);
+        }
+    }
+}
+
 class QuickSearch : Form
 {
     delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
@@ -508,17 +603,14 @@ class QuickSearch : Form
             Text = a[0],
             Go = () =>
             {
+                AppLauncher.Start(a[1]);
                 mru[a[1]] = Uses(a[1]) + 1;
                 try { File.WriteAllLines(MruFile, mru.Select(p => p.Value + "\t" + p.Key)); } catch { }
-                string target = "shell:AppsFolder\\" + a[1];   // same launch path Start uses
-                try { Process.Start(target); }
-                catch (System.ComponentModel.Win32Exception) { Explorer(target); }
             }
         };
     }
 
-    // Explorer opens whatever Start/Win+R can (AppsFolder ids, search-ms:, folders). Started with CreateProcess,
-    // not ShellExecute, so "No application is associated..." can't happen here even when ShellExecute is failing.
+    // Used only for the explicit file-search fallback, never to launch apps.
     static void Explorer(string target)
     {
         string exe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");
@@ -556,7 +648,8 @@ class QuickSearch : Form
         var row = (list.SelectedItem ?? (list.Items.Count > 0 ? list.Items[0] : null)) as Row;
         if (row == null) return;
         try { row.Go(); }   // before Hide(): while we're still foreground, Windows lets us hand focus to the target
-        catch (Exception ex) { MessageBox.Show(ex.Message, "QuickSearch"); }
+        catch (Exception ex) { MessageBox.Show("Could not open " + row.Text + ".\r\n\r\n" + ex.Message
+            + "\r\nError: 0x" + ex.HResult.ToString("X8"), "QuickSearch", MessageBoxButtons.OK, MessageBoxIcon.Error); }
         Hide();
     }
 

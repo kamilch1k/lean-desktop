@@ -24,6 +24,8 @@ LeanBar is written in C++ using Win32 controls and GDI. QuickSearch is a C# WinF
 
 ![Large Alt+Tab contrast preview using sample icons](docs/assets/alt-tab.png)
 
+QuickSearch launches packaged apps such as Terminal directly through Windows' [application activation API](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nn-shobjidl_core-iapplicationactivationmanager). Desktop app entries use their registered Shell item, preserving shortcut arguments and working directories. App launches no longer fall back to starting `explorer.exe`; failed activation displays the app name and error code, and only successful launch requests update the recent-app ranking.
+
 The Win+Tab overview is a fullscreen native canvas inside the taskbar process. Each application gets its own panel; overflowing panels scroll independently, while the overall board stays fixed. Exceptionally many app groups use additional board pages (PageUp/PageDown or the footer arrows). It creates its window and icon list only while open and displays document/project titles. It paints in response to input and window events, with no thumbnail connections, screenshot capture, or animation loop.
 
 ![Grouped Win+Tab overview using test windows](docs/assets/overview.png)
@@ -152,7 +154,7 @@ Restoration preserves the prerequisite `AutoRestartShell=0` configuration. Retur
 - Folder lists are limited to 4,096 visible entries. Change notifications watch the current folder, or both user and public Desktop folders, without recursively watching their contents. Selection is preserved across automatic refreshes. F5 is available if a filesystem does not support notifications.
 - The overview groups ordinary application windows on the current desktop. It does not create virtual desktops. Protected/elevated windows can limit window metadata or keyboard-hook access.
 - URLs use configured/cached icons where available, otherwise their associated browser/file-type icon. There is no favicon downloader.
-- Some Store apps, Windows shortcuts, and shell integrations expect Explorer. Opening such a feature may restart it. LeanBar does not continuously kill Explorer or ongoing file operations.
+- Some apps and shell integrations still expect Explorer internally. Explicitly opening File Explorer or a feature that depends on it may restart it. QuickSearch itself does not start Explorer as an app-launch fallback. LeanBar does not continuously kill Explorer or ongoing file operations.
 - The companion's global keyboard hook is inherited from QuickSearch; its behavior can be affected by elevated apps and security software. Do not disable antivirus protections to run the project.
 - The keyboard hook runs on its own message thread so UI/icon work cannot block it. Modifier state is reconciled after missed key releases; the hook is periodically renewed when no Win/Alt key is held.
 - Win+Space cycles installed keyboard layouts for the focused app, without an Explorer popup or changes to the configured language list. Each Space press advances once. Apps can reject a layout-change request; elevated apps may require their own language shortcut because of Windows message permissions.
@@ -174,6 +176,8 @@ Tests cover task filtering, overflow bounds, native desktop controls, automatic 
 The three native controls panels are also rendered with sample data and checked for blank images. The mixer render verifies that scrolling moves app rows while the master controls stay fixed, viewing another mixer does not switch playback, the explicit output button switches the simulated default, and disconnected outputs cannot be selected for playback. Bluetooth checks cover connected/disconnected context-menu states, non-audio devices, and rejecting same-name devices with different container IDs. For a separate hardware check, run `LeanControls.exe --probe report.txt`; its local report includes paired-device names and matching audio-endpoint counts. For live mixer event tests, use `LeanControls.exe --test-live-sound report.txt`: it verifies that a new isolated session appears automatically, external volume/mute events update its controls, and its slider writes back correctly. These tests only change a dedicated test session, never another app's volume, pairing, radios, network connections, or default output. Reports are local and should not be committed.
 
 App-manager tests cover aggregation, separate installations, parent PID reuse, resource sampling, and normal/forced closure of disposable test-owned processes. They never close the user's applications. The synthetic UI render also checks sorting, project-title filtering, selection preservation, detail tabs, and disabling actions when the selected app exits. Keyboard-layout tests cycle only a test-owned window through the installed layouts and restore its initial layout.
+
+Launcher tests start a disposable executable through a shortcut, verify its arguments and working directory, and check that missing desktop/packaged targets report failures. They require a normal interactive Windows session for the activation COM server. Optional `build\tests\AppLaunch.exe <path-to-QuickSearch.Companion.exe> --app "Terminal"` launches that installed app, verifies its visible window, and leaves it open; the routine suite does not open the user's apps.
 
 ## Project layout
 

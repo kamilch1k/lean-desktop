@@ -32,6 +32,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Switcher rendering failed.' }
     & .\build\tests\InputLanguage.exe (Join-Path $bin 'QuickSearch.Companion.exe')
     if ($LASTEXITCODE -ne 0) { throw 'Input-language switching failed.' }
+    & .\build\tests\AppLaunch.exe (Join-Path $bin 'QuickSearch.Companion.exe')
+    if ($LASTEXITCODE -ne 0) { throw 'Application launch tests failed.' }
     Add-Type -AssemblyName System.Drawing
     foreach ($panel in 'sound','bluetooth','network') {
         $render = Join-Path $bin ($panel + '-preview.png')
